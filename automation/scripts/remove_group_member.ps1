@@ -15,15 +15,10 @@ function Initialize-ExchangeShell {
     if ($null -ne (Get-Command 'Get-DistributionGroup' -ErrorAction SilentlyContinue)) {
         return
     }
-    if ([string]::IsNullOrWhiteSpace($env:ExchangeInstallPath)) {
-        throw 'ExchangeInstallPath is not defined on the target server.'
-    }
-    $remoteExchange = Join-Path $env:ExchangeInstallPath 'bin\RemoteExchange.ps1'
-    if (-not (Test-Path -LiteralPath $remoteExchange)) {
-        throw 'Exchange Management Shell bootstrap script was not found.'
-    }
-    . $remoteExchange *> $null
-    Connect-ExchangeServer -Auto -ClientApplication:ManagementShell *> $null
+    $serverFqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
+    $exchangeUri = "http://$serverFqdn/PowerShell/"
+    $exchangeSession = New-PSSession -ConfigurationName 'Microsoft.Exchange' -ConnectionUri $exchangeUri -Authentication Kerberos
+    $null = Import-PSSession -Session $exchangeSession -DisableNameChecking -AllowClobber -WarningAction SilentlyContinue
 }
 
 function Get-GroupLabel {

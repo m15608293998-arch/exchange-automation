@@ -34,7 +34,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	operationTimeout, err := envDuration("EXCHANGE_OPERATION_TIMEOUT", 2*time.Minute)
+	operationTimeout, err := envDuration("EXCHANGE_OPERATION_TIMEOUT", 5*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
@@ -45,7 +45,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("EXCHANGE_MAIL_DOMAIN must not be empty")
 	}
 
-	winRMUser := strings.TrimSpace(envOrDefault("EXCHANGE_WINRM_USER", "svc_exchange_auto@exchlab.local"))
+	winRMUser := strings.TrimSpace(envOrDefault("EXCHANGE_WINRM_USER", "svc_exchange_auto@EXCHLAB.LOCAL"))
 	if winRMUser == "" {
 		return Config{}, fmt.Errorf("EXCHANGE_WINRM_USER must not be empty")
 	}

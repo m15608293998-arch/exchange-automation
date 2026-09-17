@@ -1,2 +1,4 @@
 ansible-core>=2.15,<2.16
-pywinrm>=0.4.3,<0.6
+pypsrp>=0.8,<1.0
+gssapi>=1.8,<2
+krb5>=0.5,<1

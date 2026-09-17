@@ -1,6 +1,6 @@
 # Exchange 2019 员工邮箱自动化
 
-这是一个最小化的 Go + Ansible 服务。Go 提供 HTTP API、输入校验和业务编排；Ansible 只通过 WinRM 把独立 PowerShell 脚本送到 Exchange Server 2019 执行。
+这是一个最小化的 Go + Ansible 服务。Go 提供 HTTP API、输入校验和业务编排；Ansible 通过基于 WinRM 的 PSRP 把独立 PowerShell 脚本送到 Exchange Server 2019 执行。
 
 项目只执行以下 Exchange 管理命令：
 
@@ -37,19 +37,32 @@ automation/scripts/            独立 Exchange PowerShell 脚本
 
 ## 环境准备
 
-Linux 控制端需要 Go 1.22+、Ansible Core、`pywinrm` 和 `ansible.windows` collection：
+Linux 控制端需要 Go 1.22+、Ansible Core、PSRP/Kerberos Python 依赖和 `ansible.windows` collection。CentOS/RHEL 在没有预编译 wheel 时还需要开发头文件：
 
 ```bash
+dnf install -y gcc python39-devel krb5-devel
 python3 -m pip install -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Exchange 主机需要启用 WinRM。默认连接方案为 HTTPS/5986 + NTLM，适合目前只有域账号密码的场景。测试环境使用自签名证书时可将证书校验设为 `ignore`；生产环境应部署受信任证书并设置为 `validate`。如果测试服务器只有默认 HTTP Listener，可改为：
+Exchange 主机需要启用 PowerShell Remoting，并允许 RBAC 服务账号访问 `Microsoft.PowerShell` 会话端点。默认连接方案是测试环境已验证的 PSRP/WinRM HTTP 5985 + Kerberos。Kerberos 会自动获取并委派服务账号票据，HTTP 上传输的 PSRP 消息仍由 Kerberos 加密；不需要启用 CredSSP，也不需要把账号加入 Administrators。
+
+可在 Exchange 主机检查远程端点权限和账号状态：
+
+```powershell
+Get-PSSessionConfiguration -Name Microsoft.PowerShell | Format-List Name,Permission
+Get-User svc_exchange_auto | Format-List RemotePowerShellEnabled
+```
+
+端点 ACL 应包含服务账号，且 `RemotePowerShellEnabled` 应为 `True`。外层 PSRP 会话必须允许 Kerberos 凭据委派，因为脚本会从标准 PowerShell 端点建立到本机 Exchange `/PowerShell/` 端点的受限 RBAC 会话。
+
+测试节点无法通过 DNS 发现 KDC，因此仓库提供了测试专用的 `automation/krb5.test.conf`：
 
 ```bash
-export EXCHANGE_WINRM_PORT=5985
-export EXCHANGE_WINRM_SCHEME=http
+export KRB5_CONFIG="$PWD/automation/krb5.test.conf"
 ```
+
+生产内网应优先使用系统 `/etc/krb5.conf` 和内网 DNS，不要照搬测试 KDC 地址。部署时必须把 `EXCHANGE_HOST`、`EXCHANGE_SERVER_FQDN` 和 Kerberos realm 改为生产值。若生产 WinRM 使用 HTTPS/5986，只需调整端口、协议和证书校验配置。
 
 ## 配置
 
@@ -71,23 +84,28 @@ export EXCHANGE_WINRM_PASSWORD='replace-with-secret'
 | `EXCHANGE_MAILBOX_DATABASE` | 空 | 空值表示 Exchange 自动选择数据库 |
 | `EXCHANGE_RESET_PASSWORD_ON_NEXT_LOGON` | `false` | 是否强制下次登录修改密码 |
 | `EXCHANGE_BYPASS_GROUP_MANAGER_CHECK` | `true` | 增删组成员时绕过组所有者检查；RBAC 需允许该参数 |
-| `EXCHANGE_OPERATION_TIMEOUT` | `2m` | 一次完整 HTTP 业务操作的超时 |
+| `EXCHANGE_OPERATION_TIMEOUT` | `5m` | 一次完整 HTTP 业务操作的超时；通讯组较多时应相应调大 |
 | `EXCHANGE_HOST` | `192.168.6.77` | Exchange 主机地址 |
-| `EXCHANGE_WINRM_USER` | `svc_exchange_auto@exchlab.local` | WinRM/RBAC 服务账号 |
+| `EXCHANGE_WINRM_USER` | `svc_exchange_auto@EXCHLAB.LOCAL` | WinRM/RBAC Kerberos 主体 |
 | `EXCHANGE_WINRM_PASSWORD` | 无 | 必填，必须来自 Secret 或环境变量 |
-| `EXCHANGE_WINRM_PORT` | `5986` | WinRM 端口 |
-| `EXCHANGE_WINRM_SCHEME` | `https` | WinRM 协议 |
-| `EXCHANGE_WINRM_TRANSPORT` | `ntlm` | WinRM 认证方式 |
-| `EXCHANGE_WINRM_CERT_VALIDATION` | `ignore` | 测试证书策略；生产建议 `validate` |
+| `EXCHANGE_WINRM_PORT` | `5985` | PSRP/WinRM 端口 |
+| `EXCHANGE_WINRM_SCHEME` | `http` | PSRP/WinRM 协议；Kerberos 提供消息加密 |
+| `EXCHANGE_PSRP_AUTH` | `kerberos` | PSRP 认证方式 |
+| `EXCHANGE_SERVER_FQDN` | `exchlab.exchlab.local` | Kerberos SPN 使用的 Exchange FQDN |
+| `EXCHANGE_KERBEROS_SERVICE` | `HTTP` | 当前 Exchange/WinRM 注册的 SPN 服务名 |
+| `EXCHANGE_IGNORE_PROXY` | `true` | 私网 Exchange 连接不经过控制节点代理 |
+| `EXCHANGE_WINRM_CERT_VALIDATION` | `ignore` | 使用 HTTPS 时的证书策略；生产建议 `validate` |
+| `KRB5_CONFIG` | 系统默认 | 测试环境可指向 `automation/krb5.test.conf` |
 
 也可以通过 `ANSIBLE_INVENTORY` 指向自己的 inventory 文件，覆盖主机、端口和认证配置。
 
 ## 启动和检查
 
-先验证 WinRM，再启动服务：
+先导出配置、验证 PSRP/WinRM，再启动服务：
 
 ```bash
-ansible exchange_servers -m ansible.windows.win_ping
+export KRB5_CONFIG="$PWD/automation/krb5.test.conf"
+ansible exchange_servers -i automation/inventory/hosts.yml -m ansible.windows.win_ping
 go test ./...
 go run ./cmd/exchange-automation
 ```
