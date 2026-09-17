@@ -1,0 +1,49 @@
+---
+- name: Run one allow-listed Exchange automation operation
+  hosts: exchange_servers
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    exchange_scripts:
+      ensure_mailbox: ensure_mailbox.ps1
+      ensure_group_member: ensure_group_member.ps1
+      discover_user_groups: discover_user_groups.ps1
+      remove_group_member: remove_group_member.ps1
+
+  pre_tasks:
+    - name: Require exactly one Exchange target
+      ansible.builtin.assert:
+        that:
+          - groups['exchange_servers'] | length == 1
+        fail_msg: The inventory must contain exactly one host in exchange_servers.
+      run_once: true
+
+    - name: Validate the requested operation
+      ansible.builtin.assert:
+        that:
+          - exchange_operation is defined
+          - exchange_operation in exchange_scripts
+          - exchange_parameters is defined
+          - exchange_parameters is mapping
+        fail_msg: The requested Exchange operation or its parameters are invalid.
+      run_once: true
+
+  tasks:
+    - name: Execute the Exchange Management Shell operation
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir + '/../scripts/' + exchange_scripts[exchange_operation]) }}"
+        parameters: >-
+          {{ exchange_parameters
+             | dict2items
+             | rejectattr('key', 'equalto', 'InitialPassword')
+             | items2dict }}
+        sensitive_parameters: >-
+          {{ [{'name': 'InitialPassword', 'value': exchange_parameters.InitialPassword}]
+             if exchange_operation == 'ensure_mailbox'
+             else omit }}
+      register: exchange_command
+      no_log: true
+
+    - name: Return the structured result to the Go service
+      ansible.builtin.debug:
+        msg: "EXCHANGE_AUTOMATION_RESULT_B64={{ (exchange_command.output | join('')) | b64encode }}"
