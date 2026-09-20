@@ -1,0 +1,4 @@
+# Default transport: no Ansible or Windows collection required.
+pypsrp==0.8.1
+gssapi==1.12.0
+krb5==0.10.0

@@ -1,145 +1,54 @@
-param(
-    [Parameter(Mandatory = $true)]
-    [string] $LoginName,
-
-    [Parameter(Mandatory = $true)]
-    [string] $DisplayName,
-
-    [Parameter(Mandatory = $true)]
-    [string] $UserPrincipalName,
-
-    [Parameter(Mandatory = $true)]
-    [string] $PrimarySmtpAddress,
-
-    [Parameter(Mandatory = $true)]
-    [System.Security.SecureString] $InitialPassword,
-
-    [AllowEmptyString()]
-    [string] $OrganizationalUnit = '',
-
-    [AllowEmptyString()]
-    [string] $MailboxDatabase = '',
-
-    [bool] $ResetPasswordOnNextLogon = $false
-)
-
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-
-function Initialize-ExchangeShell {
-    if ($null -ne (Get-Command 'Get-Mailbox' -ErrorAction SilentlyContinue)) {
-        return
+function Write-MailboxResult {
+    param([object] $Mailbox, [bool] $Created)
+    Assert-MailboxIdentity $Mailbox
+    if (-not ([string]$Mailbox.PrimarySmtpAddress).Equals($PrimarySmtpAddress, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$Mailbox.DisplayName).Equals($DisplayName, [System.StringComparison]::Ordinal)) {
+        Stop-Automation 'RECIPIENT_CONFLICT'
     }
-
-    $serverFqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
-    $exchangeUri = "http://$serverFqdn/PowerShell/"
-    $exchangeSession = New-PSSession -ConfigurationName 'Microsoft.Exchange' -ConnectionUri $exchangeUri -Authentication Kerberos
-    $null = Import-PSSession -Session $exchangeSession -DisableNameChecking -AllowClobber -WarningAction SilentlyContinue
-
-    if ($null -eq (Get-Command 'Get-Mailbox' -ErrorAction SilentlyContinue)) {
-        throw 'Exchange Management Shell cmdlets are unavailable.'
+    Write-AutomationResult @{
+        created = $Created
+        mailbox_id = [string]$Mailbox.Guid
+        login_name = [string]$Mailbox.SamAccountName
+        display_name = [string]$Mailbox.DisplayName
+        user_principal_name = [string]$Mailbox.UserPrincipalName
+        primary_smtp_address = [string]$Mailbox.PrimarySmtpAddress
     }
 }
-
-function Write-AutomationResult {
-    param(
-        [bool] $OK,
-        [string] $Code,
-        [string] $Message,
-        [object] $Data
-    )
-
-    [ordered]@{
-        ok      = $OK
-        code    = $Code
-        message = $Message
-        data    = $Data
-    } | ConvertTo-Json -Depth 8 -Compress
-}
-
 try {
     Initialize-ExchangeShell
-
-    $mailbox = Get-Mailbox -Identity $LoginName -ErrorAction SilentlyContinue
+    $mailbox = Get-OptionalObject { Get-Mailbox -Identity $LoginName @script:DirectoryParameters }
     if ($null -eq $mailbox) {
-        $mailbox = Get-Mailbox -Identity $UserPrincipalName -ErrorAction SilentlyContinue
+        $mailbox = Get-OptionalObject { Get-Mailbox -Identity $UserPrincipalName @script:DirectoryParameters }
     }
-
     if ($null -ne $mailbox) {
-        $sameLogin = ([string]$mailbox.SamAccountName).Equals($LoginName, [System.StringComparison]::OrdinalIgnoreCase)
-        $sameAddress = ([string]$mailbox.PrimarySmtpAddress).Equals($PrimarySmtpAddress, [System.StringComparison]::OrdinalIgnoreCase)
-        if (-not ($sameLogin -and $sameAddress)) {
-            Write-AutomationResult -OK $false -Code 'RECIPIENT_CONFLICT' -Message 'An existing mailbox uses the requested login name or address but does not match the requested identity.' -Data $null
-            return
-        }
-
-        Write-AutomationResult -OK $true -Code '' -Message 'Mailbox already exists.' -Data ([ordered]@{
-            created              = $false
-            login_name           = [string]$mailbox.SamAccountName
-            display_name         = [string]$mailbox.DisplayName
-            primary_smtp_address = [string]$mailbox.PrimarySmtpAddress
-        })
+        Write-MailboxResult $mailbox $false
         return
     }
-
-    $recipientByLogin = Get-Recipient -Identity $LoginName -ErrorAction SilentlyContinue
-    $recipientByAddress = Get-Recipient -Identity $PrimarySmtpAddress -ErrorAction SilentlyContinue
-    $userByLogin = Get-User -Identity $LoginName -ErrorAction SilentlyContinue
-    if (($null -ne $recipientByLogin) -or ($null -ne $recipientByAddress) -or ($null -ne $userByLogin)) {
-        Write-AutomationResult -OK $false -Code 'RECIPIENT_CONFLICT' -Message 'The requested login name or email address is already assigned to another AD or Exchange recipient.' -Data $null
-        return
+    $recipientByLogin = Get-OptionalRecipient $LoginName
+    $recipientByAddress = Get-OptionalRecipient $PrimarySmtpAddress
+    $userByLogin = Get-OptionalObject { Get-User -Identity $LoginName @script:DirectoryParameters }
+    $userByUPN = Get-OptionalObject { Get-User -Identity $UserPrincipalName @script:DirectoryParameters }
+    if ($null -ne $recipientByLogin -or $null -ne $recipientByAddress -or $null -ne $userByLogin -or $null -ne $userByUPN) {
+        Stop-Automation 'RECIPIENT_CONFLICT'
     }
-
-    $newMailboxParameters = @{
-        Name                     = $LoginName
-        FirstName                = $LoginName
-        DisplayName              = $DisplayName
-        Alias                    = $LoginName
-        SamAccountName           = $LoginName
-        UserPrincipalName        = $UserPrincipalName
-        PrimarySmtpAddress       = $PrimarySmtpAddress
-        Password                 = $InitialPassword
+    if ($null -eq $InitialPassword -or $InitialPassword.Length -eq 0) { Stop-Automation 'INVALID_REQUEST' }
+    $parameters = @{
+        Name = $LoginName
+        FirstName = $LoginName
+        Alias = $LoginName
+        SamAccountName = $LoginName
+        DisplayName = $DisplayName
+        UserPrincipalName = $UserPrincipalName
+        PrimarySmtpAddress = $PrimarySmtpAddress
+        Password = $InitialPassword
         ResetPasswordOnNextLogon = $ResetPasswordOnNextLogon
     }
-    if (-not [string]::IsNullOrWhiteSpace($OrganizationalUnit)) {
-        $newMailboxParameters['OrganizationalUnit'] = $OrganizationalUnit
-    }
-    if (-not [string]::IsNullOrWhiteSpace($MailboxDatabase)) {
-        $newMailboxParameters['Database'] = $MailboxDatabase
-    }
-
-    try {
-        $mailbox = New-Mailbox @newMailboxParameters
-    }
-    catch {
-        $newMailboxError = $_
-        $mailbox = Get-Mailbox -Identity $LoginName -ErrorAction SilentlyContinue
-        if ($null -eq $mailbox) {
-            throw $newMailboxError
-        }
-
-        $sameLogin = ([string]$mailbox.SamAccountName).Equals($LoginName, [System.StringComparison]::OrdinalIgnoreCase)
-        $sameAddress = ([string]$mailbox.PrimarySmtpAddress).Equals($PrimarySmtpAddress, [System.StringComparison]::OrdinalIgnoreCase)
-        if (-not ($sameLogin -and $sameAddress)) {
-            throw $newMailboxError
-        }
-
-        Write-AutomationResult -OK $true -Code '' -Message 'Mailbox was created concurrently by another request.' -Data ([ordered]@{
-            created              = $false
-            login_name           = [string]$mailbox.SamAccountName
-            display_name         = [string]$mailbox.DisplayName
-            primary_smtp_address = [string]$mailbox.PrimarySmtpAddress
-        })
-        return
-    }
-
-    Write-AutomationResult -OK $true -Code '' -Message 'Mailbox was created.' -Data ([ordered]@{
-        created              = $true
-        login_name           = [string]$mailbox.SamAccountName
-        display_name         = [string]$mailbox.DisplayName
-        primary_smtp_address = [string]$mailbox.PrimarySmtpAddress
-    })
+    if (-not [string]::IsNullOrWhiteSpace($OrganizationalUnit)) { $parameters['OrganizationalUnit'] = $OrganizationalUnit }
+    if (-not [string]::IsNullOrWhiteSpace($MailboxDatabase)) { $parameters['Database'] = $MailboxDatabase }
+    $script:MutationStarted = $true
+    $created = New-Mailbox @parameters @script:DirectoryParameters
+    $mailbox = Get-Mailbox -Identity ([string]$created.Guid) @script:DirectoryParameters
+    Write-MailboxResult $mailbox $true
 }
-catch {
-    Write-AutomationResult -OK $false -Code 'EXCHANGE_COMMAND_FAILED' -Message $_.Exception.Message -Data $null
-}
+catch { Write-AutomationFailure $_ }
+finally { Close-ExchangeShell }

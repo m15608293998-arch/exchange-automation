@@ -12,8 +12,10 @@ type Executor interface {
 
 // Result is the small, stable protocol shared by PowerShell and Go.
 type Result struct {
-	OK      bool            `json:"ok"`
-	Code    string          `json:"code,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Data    json.RawMessage `json:"data,omitempty"`
+	OK           bool            `json:"ok"`
+	Code         string          `json:"code,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	Data         json.RawMessage `json:"data,omitempty"`
+	StateUnknown bool            `json:"state_unknown,omitempty"`
+	ErrorType    string          `json:"error_type,omitempty"`
 }

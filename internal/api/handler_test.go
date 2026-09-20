@@ -14,6 +14,16 @@ import (
 	"github.com/m15608293998-arch/exchange-automation/internal/exchange"
 )
 
+const testToken = "test-service-token-at-least-32-bytes"
+
+type authenticatedTestHandler struct{ http.Handler }
+
+func (h authenticatedTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	r.Header.Set("Content-Type", "application/json")
+	h.Handler.ServeHTTP(w, r)
+}
+
 type fakeService struct {
 	onboardInput   exchange.OnboardInput
 	onboardResult  exchange.OnboardResult
@@ -112,9 +122,9 @@ func TestHealthEndpoint(t *testing.T) {
 
 func newTestHandler(t *testing.T, service exchangeService) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(service, log.New(io.Discard, "", 0), time.Second)
+	handler, err := NewHandler(service, log.New(io.Discard, "", 0), time.Second, testToken)
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
 	}
-	return handler
+	return authenticatedTestHandler{handler}
 }

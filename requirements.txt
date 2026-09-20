@@ -1,4 +1,3 @@
-ansible-core>=2.15,<2.16
-pypsrp>=0.8,<1.0
-gssapi>=1.8,<2
-krb5>=0.5,<1
+# Optional legacy Ansible transport; default direct mode uses requirements-direct.txt.
+-r requirements-direct.txt
+ansible-core==2.15.13

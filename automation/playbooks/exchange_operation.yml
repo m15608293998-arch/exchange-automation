@@ -5,6 +5,7 @@
   any_errors_fatal: true
   vars:
     exchange_scripts:
+      resolve_groups: resolve_groups.ps1
       ensure_mailbox: ensure_mailbox.ps1
       ensure_group_member: ensure_group_member.ps1
       discover_user_groups: discover_user_groups.ps1
@@ -31,7 +32,7 @@
   tasks:
     - name: Execute the Exchange Management Shell operation
       ansible.windows.win_powershell:
-        script: "{{ lookup('ansible.builtin.file', playbook_dir + '/../scripts/' + exchange_scripts[exchange_operation]) }}"
+        script: "{{ lookup('ansible.builtin.file', playbook_dir + '/../scripts/common.ps1') + '\n' + lookup('ansible.builtin.file', playbook_dir + '/../scripts/' + exchange_scripts[exchange_operation]) }}"
         parameters: >-
           {{ exchange_parameters
              | dict2items
@@ -39,7 +40,7 @@
              | items2dict }}
         sensitive_parameters: >-
           {{ [{'name': 'InitialPassword', 'value': exchange_parameters.InitialPassword}]
-             if exchange_operation == 'ensure_mailbox'
+             if exchange_operation == 'ensure_mailbox' and exchange_parameters.InitialPassword | length > 0
              else omit }}
       register: exchange_command
       no_log: true

@@ -10,6 +10,17 @@ import (
 	"github.com/m15608293998-arch/exchange-automation/internal/automation"
 )
 
+const mailboxID = "11111111-1111-1111-1111-111111111111"
+const groupA = "22222222-2222-2222-2222-222222222222"
+const groupB = "33333333-3333-3333-3333-333333333333"
+
+func resolvedGroups() automation.Result {
+	return successfulResult(map[string]any{"groups": []map[string]string{{"identity": groupA, "label": "all@bjwgby.com"}, {"identity": groupB, "label": "dev@bjwgby.com"}}})
+}
+func mailboxResult(created bool) automation.Result {
+	return successfulResult(map[string]any{"created": created, "mailbox_id": mailboxID, "login_name": "slpeng", "display_name": "江流", "user_principal_name": "slpeng@bjwgby.com", "primary_smtp_address": "slpeng@bjwgby.com"})
+}
+
 type executorCall struct {
 	operation  string
 	parameters map[string]any
@@ -39,11 +50,10 @@ func TestOnboardCreatesMailboxAndAddsGroups(t *testing.T) {
 	t.Parallel()
 
 	executor := &fakeExecutor{responses: []executorResponse{
-		{result: successfulResult(map[string]any{
-			"created": true, "login_name": "slpeng", "display_name": "江流", "primary_smtp_address": "slpeng@bjwgby.com",
-		})},
-		{result: successfulResult(map[string]any{"group": "all@bjwgby.com", "added": true})},
-		{result: successfulResult(map[string]any{"group": "dev@bjwgby.com", "added": false})},
+		{result: resolvedGroups()},
+		{result: mailboxResult(true)},
+		{result: successfulResult(map[string]any{"group": "all@bjwgby.com", "group_id": groupA, "member_id": mailboxID, "added": true})},
+		{result: successfulResult(map[string]any{"group": "dev@bjwgby.com", "group_id": groupB, "member_id": mailboxID, "added": false})},
 	}}
 	service := newTestService(t, executor)
 
@@ -62,16 +72,16 @@ func TestOnboardCreatesMailboxAndAddsGroups(t *testing.T) {
 	if !reflect.DeepEqual(result.ExistingGroups, []string{"dev@bjwgby.com"}) {
 		t.Fatalf("Onboard() ExistingGroups = %#v", result.ExistingGroups)
 	}
-	if len(executor.calls) != 3 {
-		t.Fatalf("executor calls = %d, want 3", len(executor.calls))
+	if len(executor.calls) != 4 {
+		t.Fatalf("executor calls = %d, want 4", len(executor.calls))
 	}
-	if executor.calls[0].operation != "ensure_mailbox" {
+	if executor.calls[0].operation != "resolve_groups" {
 		t.Fatalf("first operation = %q", executor.calls[0].operation)
 	}
-	if got := executor.calls[0].parameters["UserPrincipalName"]; got != "slpeng@bjwgby.com" {
+	if got := executor.calls[1].parameters["UserPrincipalName"]; got != "slpeng@bjwgby.com" {
 		t.Fatalf("UserPrincipalName = %#v", got)
 	}
-	if got := executor.calls[0].parameters["InitialPassword"]; got != "test-password" {
+	if got := executor.calls[1].parameters["InitialPassword"]; got != "test-password" {
 		t.Fatalf("InitialPassword was not passed to Ansible")
 	}
 }
@@ -95,10 +105,9 @@ func TestOnboardReturnsPartialResultAfterGroupFailure(t *testing.T) {
 	t.Parallel()
 
 	executor := &fakeExecutor{responses: []executorResponse{
-		{result: successfulResult(map[string]any{
-			"created": true, "login_name": "slpeng", "primary_smtp_address": "slpeng@bjwgby.com",
-		})},
-		{result: successfulResult(map[string]any{"group": "all@bjwgby.com", "added": true})},
+		{result: resolvedGroups()},
+		{result: mailboxResult(true)},
+		{result: successfulResult(map[string]any{"group": "all@bjwgby.com", "group_id": groupA, "member_id": mailboxID, "added": true})},
 		{result: automation.Result{OK: false, Code: CodeGroupNotFound, Message: "Distribution group was not found"}},
 	}}
 	service := newTestService(t, executor)
@@ -116,12 +125,12 @@ func TestOffboardRemovesDiscoveredGroups(t *testing.T) {
 	t.Parallel()
 
 	executor := &fakeExecutor{responses: []executorResponse{
-		{result: successfulResult(map[string]any{"groups": []map[string]string{
-			{"identity": "group-b", "label": "b@bjwgby.com"},
-			{"identity": "group-a", "label": "a@bjwgby.com"},
+		{result: successfulResult(map[string]any{"mailbox_id": mailboxID, "groups": []map[string]string{
+			{"identity": groupB, "label": "b@bjwgby.com"},
+			{"identity": groupA, "label": "a@bjwgby.com"},
 		}})},
-		{result: successfulResult(map[string]any{"group": "b@bjwgby.com", "removed": true})},
-		{result: successfulResult(map[string]any{"group": "a@bjwgby.com", "removed": true})},
+		{result: successfulResult(map[string]any{"group": "b@bjwgby.com", "group_id": groupB, "member_id": mailboxID, "removed": true})},
+		{result: successfulResult(map[string]any{"group": "a@bjwgby.com", "group_id": groupA, "member_id": mailboxID, "removed": true})},
 	}}
 	service := newTestService(t, executor)
 
@@ -141,7 +150,7 @@ func TestOffboardIsIdempotentWhenNoGroupsRemain(t *testing.T) {
 	t.Parallel()
 
 	executor := &fakeExecutor{responses: []executorResponse{
-		{result: successfulResult(map[string]any{"groups": []map[string]string{}})},
+		{result: successfulResult(map[string]any{"mailbox_id": mailboxID, "groups": []map[string]string{}})},
 	}}
 	service := newTestService(t, executor)
 

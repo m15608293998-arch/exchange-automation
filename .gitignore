@@ -7,6 +7,10 @@ automation/inventory/hosts.local.yml
 # Build and test output
 /bin/
 /coverage.out
+/.venv/
+/wheelhouse/
+/collections/
+/exchange服务器信息/
 *.log
 
 # Local Ansible state

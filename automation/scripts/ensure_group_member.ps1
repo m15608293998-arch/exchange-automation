@@ -1,84 +1,23 @@
-param(
-    [Parameter(Mandatory = $true)]
-    [string] $GroupIdentity,
-
-    [Parameter(Mandatory = $true)]
-    [string] $MemberIdentity,
-
-    [bool] $BypassGroupManagerCheck = $true
-)
-
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-
-function Initialize-ExchangeShell {
-    if ($null -ne (Get-Command 'Get-DistributionGroup' -ErrorAction SilentlyContinue)) {
-        return
-    }
-    $serverFqdn = [System.Net.Dns]::GetHostEntry($env:COMPUTERNAME).HostName
-    $exchangeUri = "http://$serverFqdn/PowerShell/"
-    $exchangeSession = New-PSSession -ConfigurationName 'Microsoft.Exchange' -ConnectionUri $exchangeUri -Authentication Kerberos
-    $null = Import-PSSession -Session $exchangeSession -DisableNameChecking -AllowClobber -WarningAction SilentlyContinue
-}
-
-function Get-GroupLabel {
-    param([object] $Group)
-    if (-not [string]::IsNullOrWhiteSpace([string]$Group.PrimarySmtpAddress)) {
-        return [string]$Group.PrimarySmtpAddress
-    }
-    return [string]$Group.Name
-}
-
-function Test-GroupMembership {
-    param([object] $Group, [object] $Recipient)
-    $members = @(Get-DistributionGroupMember -Identity $Group.Identity -ResultSize Unlimited)
-    return @($members | Where-Object { $_.Guid -eq $Recipient.Guid }).Count -gt 0
-}
-
-function Write-AutomationResult {
-    param([bool] $OK, [string] $Code, [string] $Message, [object] $Data)
-    [ordered]@{ ok = $OK; code = $Code; message = $Message; data = $Data } | ConvertTo-Json -Depth 8 -Compress
-}
-
 try {
     Initialize-ExchangeShell
-
-    $group = Get-DistributionGroup -Identity $GroupIdentity -ErrorAction SilentlyContinue
-    if ($null -eq $group) {
-        Write-AutomationResult -OK $false -Code 'GROUP_NOT_FOUND' -Message 'The static Exchange distribution group was not found.' -Data $null
-        return
-    }
-
-    $recipient = Get-Recipient -Identity $MemberIdentity -ErrorAction SilentlyContinue
-    if ($null -eq $recipient) {
-        Write-AutomationResult -OK $false -Code 'USER_NOT_FOUND' -Message 'The Exchange recipient was not found.' -Data $null
-        return
-    }
-
-    $groupLabel = Get-GroupLabel -Group $group
-    if (Test-GroupMembership -Group $group -Recipient $recipient) {
-        Write-AutomationResult -OK $true -Code '' -Message 'Recipient is already a group member.' -Data ([ordered]@{ group = $groupLabel; added = $false })
-        return
-    }
-
-    $addParameters = @{ Identity = $group.Identity; Member = $recipient.Identity }
-    if ($BypassGroupManagerCheck) {
-        $addParameters['BypassSecurityGroupManagerCheck'] = $true
-    }
-
-    try {
-        Add-DistributionGroupMember @addParameters
-    }
-    catch {
-        if (Test-GroupMembership -Group $group -Recipient $recipient) {
-            Write-AutomationResult -OK $true -Code '' -Message 'Recipient became a group member concurrently.' -Data ([ordered]@{ group = $groupLabel; added = $false })
-            return
+    $recipient = Get-TargetMailbox
+    $group = Get-TargetGroup
+    if ($null -eq $group) { Stop-Automation 'GROUP_NOT_FOUND' }
+    $data = @{ group = (Get-GroupLabel $group); group_id = [string]$group.Guid; member_id = [string]$recipient.Guid; added = $false }
+    if (-not (Test-GroupMembership $group $recipient)) {
+        $parameters = @{ Identity = $GroupIdentity; Member = $MemberIdentity }
+        if ($BypassGroupManagerCheck) { $parameters['BypassSecurityGroupManagerCheck'] = $true }
+        $script:MutationStarted = $true
+        try {
+            Add-DistributionGroupMember @parameters @script:DirectoryParameters
+            $data.added = $true
         }
-        throw
+        catch {
+            if (-not (Test-GroupMembership $group $recipient)) { throw }
+        }
+        if (-not (Test-GroupMembership $group $recipient)) { throw 'Membership verification failed.' }
     }
-
-    Write-AutomationResult -OK $true -Code '' -Message 'Recipient was added to the group.' -Data ([ordered]@{ group = $groupLabel; added = $true })
+    Write-AutomationResult $data
 }
-catch {
-    Write-AutomationResult -OK $false -Code 'EXCHANGE_COMMAND_FAILED' -Message $_.Exception.Message -Data $null
-}
+catch { Write-AutomationFailure $_ }
+finally { Close-ExchangeShell }

@@ -1,6 +1,7 @@
 package ansible
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,9 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/m15608293998-arch/exchange-automation/internal/automation"
 )
@@ -18,6 +22,7 @@ var (
 	ErrExecution = errors.New("ansible execution failed")
 	resultRE     = regexp.MustCompile(`EXCHANGE_AUTOMATION_RESULT_B64=([A-Za-z0-9+/=]+)`)
 	operations   = map[string]struct{}{
+		"resolve_groups":       {},
 		"ensure_mailbox":       {},
 		"ensure_group_member":  {},
 		"discover_user_groups": {},
@@ -62,11 +67,16 @@ func (r *Runner) Execute(ctx context.Context, operation string, parameters map[s
 	if err := os.MkdirAll(r.localTemp, 0o700); err != nil {
 		return automation.Result{}, fmt.Errorf("create Ansible temp directory: %w", err)
 	}
-	if err := os.Chmod(r.localTemp, 0o700); err != nil {
-		return automation.Result{}, fmt.Errorf("secure Ansible temp directory: %w", err)
+	info, err := os.Lstat(r.localTemp)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return automation.Result{}, fmt.Errorf("Ansible temp directory must be a private directory (0700)")
 	}
-
-	varsFile, err := os.CreateTemp(r.localTemp, "exchange-vars-*.json")
+	runDir, err := os.MkdirTemp(r.localTemp, "run-")
+	if err != nil {
+		return automation.Result{}, fmt.Errorf("create run directory: %w", err)
+	}
+	defer os.RemoveAll(runDir)
+	varsFile, err := os.CreateTemp(runDir, "exchange-vars-*.json")
 	if err != nil {
 		return automation.Result{}, fmt.Errorf("create temporary Ansible variables file: %w", err)
 	}
@@ -84,8 +94,10 @@ func (r *Runner) Execute(ctx context.Context, operation string, parameters map[s
 		Operation  string         `json:"exchange_operation"`
 		Parameters map[string]any `json:"exchange_parameters"`
 	}{
-		Operation:  operation,
-		Parameters: parameters,
+		Operation: operation,
+		// Ansible 2.15's JSON decoder recognizes this unsafe string envelope.
+		// Protect before templating, including passwords and nested list values.
+		Parameters: protectValues(parameters).(map[string]any),
 	}
 	if err := json.NewEncoder(varsFile).Encode(payload); err != nil {
 		_ = varsFile.Close()
@@ -103,29 +115,46 @@ func (r *Runner) Execute(ctx context.Context, operation string, parameters map[s
 		"--extra-vars", "@"+varsPath,
 	)
 	command.Env = withEnvironment(os.Environ(), map[string]string{
-		"ANSIBLE_LOCAL_TEMP": r.localTemp,
-		"ANSIBLE_NOCOLOR":    "1",
+		"ANSIBLE_LOCAL_TEMP":      runDir,
+		"ANSIBLE_NOCOLOR":         "1",
+		"ANSIBLE_STDOUT_CALLBACK": "default",
 	})
-
-	output, commandErr := command.CombinedOutput()
-	result, parseErr := parseResult(output)
-	if parseErr == nil {
-		return result, nil
+	// Linux controller: cancel the whole process group, not just ansible's parent.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
 	}
-
+	command.WaitDelay = 2 * time.Second
+	output := &limitedOutput{}
+	command.Stdout, command.Stderr = output, output
+	commandErr := command.Run()
+	if command.Process != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return automation.Result{}, fmt.Errorf("%w: %w", ErrExecution, ctxErr)
 	}
 	if commandErr != nil {
 		return automation.Result{}, fmt.Errorf("%w: %v", ErrExecution, commandErr)
 	}
-	return automation.Result{}, fmt.Errorf("%w: Ansible returned no structured result", ErrExecution)
+	if output.overflow {
+		return automation.Result{}, fmt.Errorf("%w: output limit exceeded", ErrExecution)
+	}
+	result, parseErr := parseResult(output.Bytes())
+	if parseErr != nil {
+		return automation.Result{}, fmt.Errorf("%w: invalid structured result", ErrExecution)
+	}
+	return result, nil
 }
 
 func parseResult(output []byte) (automation.Result, error) {
 	matches := resultRE.FindAllSubmatch(output, -1)
-	if len(matches) == 0 {
-		return automation.Result{}, errors.New("structured result marker not found")
+	if len(matches) != 1 {
+		return automation.Result{}, errors.New("expected exactly one structured result marker")
 	}
 
 	encoded := matches[len(matches)-1][1]
@@ -138,7 +167,62 @@ func parseResult(output []byte) (automation.Result, error) {
 	if err := json.Unmarshal(decoded, &result); err != nil {
 		return automation.Result{}, fmt.Errorf("decode structured result JSON: %w", err)
 	}
+	var envelope struct {
+		OK *bool `json:"ok"`
+	}
+	if err := json.Unmarshal(decoded, &envelope); err != nil || envelope.OK == nil {
+		return automation.Result{}, errors.New("missing result status")
+	}
+	if !result.OK && (result.Code == "" || result.Message == "") {
+		return automation.Result{}, errors.New("missing error details")
+	}
 	return result, nil
+}
+
+func protectValues(value any) any {
+	switch v := value.(type) {
+	case string:
+		return map[string]string{"__ansible_unsafe": v}
+	case []string:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = protectValues(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = protectValues(item)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = protectValues(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+type limitedOutput struct {
+	bytes.Buffer
+	mu       sync.Mutex
+	overflow bool
+}
+
+func (b *limitedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	const limit = 4 << 20
+	n := len(p)
+	if n > limit-b.Len() {
+		b.overflow = true
+		p = p[:limit-b.Len()]
+	}
+	_, _ = b.Buffer.Write(p)
+	return n, nil
 }
 
 func withEnvironment(current []string, overrides map[string]string) []string {

@@ -1,0 +1,17 @@
+# Production intranet template. Uses internal AD/DNS only; no Internet service.
+[libdefaults]
+    default_realm = BJWGBY.COM
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    rdns = false
+    forwardable = false
+    udp_preference_limit = 1
+
+[realms]
+    BJWGBY.COM = {
+        kdc = EXCHANGE.BJWGBY.COM
+    }
+
+[domain_realm]
+    .bjwgby.com = BJWGBY.COM
+    bjwgby.com = BJWGBY.COM

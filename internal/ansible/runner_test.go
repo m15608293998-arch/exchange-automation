@@ -24,19 +24,15 @@ func TestParseResult(t *testing.T) {
 	}
 }
 
-func TestParseResultUsesLastMarker(t *testing.T) {
+func TestParseResultRejectsMultipleMarkers(t *testing.T) {
 	t.Parallel()
 
 	first := base64.StdEncoding.EncodeToString([]byte(`{"ok":false,"code":"OLD"}`))
 	last := base64.StdEncoding.EncodeToString([]byte(`{"ok":false,"code":"LATEST"}`))
 	output := []byte("EXCHANGE_AUTOMATION_RESULT_B64=" + first + "\nEXCHANGE_AUTOMATION_RESULT_B64=" + last)
 
-	result, err := parseResult(output)
-	if err != nil {
-		t.Fatalf("parseResult() error = %v", err)
-	}
-	if result.Code != "LATEST" {
-		t.Fatalf("parseResult() code = %q, want %q", result.Code, "LATEST")
+	if _, err := parseResult(output); err == nil {
+		t.Fatal("multiple results must be rejected")
 	}
 }
 
