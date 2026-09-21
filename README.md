@@ -173,7 +173,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 
 应用只执行 New-Mailbox、Get-Mailbox、Get-Recipient、Get-User、Get-DistributionGroup、Get-DistributionGroupMember、Add-DistributionGroupMember、Remove-DistributionGroupMember，并通过 Get-Command 检查参数。不会运行任意远程脚本。完整命令/参数与作用范围要求见 [管理员交付说明](docs/production-direct.md)。
 
-测试环境和生产 CU6 的 Get-Recipient 均没有 DomainController 参数，这个只读冲突查询保留按实际参数能力适配；其他目录读写仍固定到配置的 DC。缺少写入或回读参数时，在对应写入前报错。
+此前测试账号的 Get-Recipient 没有 DomainController 参数；生产 CU6 截图中的 View-Only Recipients 根角色包含该参数。程序按实际会话能力决定这个只读冲突查询是否传入 DC，其他目录读写仍固定到配置的 DC。缺少写入或回读参数时，在对应写入前报错。
 
 只读检查（使用配置中的 URL、凭据文件、DC/OU/数据库，不需要 API token）：
 

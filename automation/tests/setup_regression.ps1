@@ -1,4 +1,4 @@
-# PowerShell 5.1 regression for the administrator installer. All AD/RBAC writes
+﻿# PowerShell 5.1 regression for the administrator installer. All AD/RBAC writes
 # below are mocks. Only isolated test handoff files may be written locally.
 param([string] $SourceText, [string] $SourcePath)
 $ErrorActionPreference = 'Stop'
@@ -148,13 +148,12 @@ Assert-Test 'mail and database discovery are not installer prerequisites' ($Sour
 Assert-Test 'account-only setup does not enumerate forest domains or employee UPN suffixes' ($SourceText -notmatch '\$domain\.Forest|uPNSuffixes|configurationNamingContext|DomainCount')
 Assert-Test 'handoff is explicitly connection-only' ($SourceText -match 'connection.env.example' -and $SourceText -notmatch 'application.env.example')
 
-# Capabilities transcribed from the production Exchange 2019 CU6 collection.
-# This independently proves that every parameter required by the installer is
-# present in the old production root roles; it does not claim write access.
+# Relevant parameter subsets transcribed from the production CU6 screenshots,
+# not a complete export of the parent roles and not evidence of write access.
 $productionCU6 = @{
     ViewOnlyRecipients = @{
         'Get-Mailbox' = @('Identity', 'DomainController')
-        'Get-Recipient' = @('Identity')
+        'Get-Recipient' = @('Identity', 'DomainController', 'ReadFromDomainController', 'ResultSize')
         'Get-User' = @('Identity', 'DomainController')
         'Get-DistributionGroup' = @('Identity', 'RecipientTypeDetails', 'ResultSize', 'DomainController')
         'Get-DistributionGroupMember' = @('Identity', 'ResultSize', 'DomainController')
@@ -179,7 +178,8 @@ foreach ($spec in $specs) {
         Assert-Test "production CU6 has required parameters for $commandName" (@($spec.Commands[$commandName] | Where-Object { $available -notcontains $_ }).Count -eq 0)
     }
 }
-Assert-Test 'production CU6 Get-Recipient compatibility needs no DC parameter' ($specs[0].Commands['Get-Recipient'] -notcontains 'DomainController')
+Assert-Test 'production ViewOnlyRecipients Get-Recipient retains its DC parameter' (@(Get-AllowedEntryParameters $read 'Get-Recipient' $productionCU6.ViewOnlyRecipients['Get-Recipient']) -contains 'DomainController')
+Assert-Test 'restricted Get-Recipient without DC remains compatible' (@(Get-AllowedEntryParameters $read 'Get-Recipient' @('Identity', 'ResultSize')) -notcontains 'DomainController')
 
 # Construct metadata only: no runspace is opened and no DNS/HTTP request is made.
 $testSecret = ConvertTo-SecureString 'Test-only-never-used-123!' -AsPlainText -Force
@@ -192,6 +192,93 @@ Assert-Test 'internal endpoint check does not follow redirects' ($connectionInfo
 $installerCommands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
 $onlineCommands = @('Invoke-WebRequest', 'Invoke-RestMethod', 'iwr', 'irm', 'curl', 'wget', 'Start-BitsTransfer', 'Install-Module', 'Install-Package', 'Save-Module', 'Update-Help')
 Assert-Test 'installer has no web probe or online installation commands' (@($installerCommands | Where-Object { $onlineCommands -contains $_ }).Count -eq 0)
+Assert-Test 'installer never invokes mailbox creation or mailbox enablement' (@($installerCommands | Where-Object { $_ -in @('New-Mailbox', 'Enable-Mailbox', 'Enable-RemoteMailbox', 'New-RemoteMailbox') }).Count -eq 0)
+
+# Exercise the real AD setup function against an in-memory principal only.
+& {
+    function New-ServicePrincipal {
+        param($Context)
+        $script:PrincipalEvents = @()
+        $script:PrincipalDouble = [pscustomobject]@{
+            SamAccountName = ''; Name = ''; UserPrincipalName = ''; DisplayName = ''; Description = ''
+            Enabled = $true; PasswordNotRequired = $true; PasswordNeverExpires = $false; DelegationPermitted = $true
+        }
+        $script:PrincipalDouble | Add-Member ScriptMethod Save {
+            $script:PrincipalEvents += 'save:' + $this.Enabled
+        }
+        $script:PrincipalDouble | Add-Member ScriptMethod SetPassword {
+            param($Password)
+            if ($script:PasswordFailure) { throw 'simulated domain password policy rejection' }
+            if ($Password -ne 'Test-only-never-used-123!') { throw 'wrong password transfer' }
+            $script:PrincipalEvents += 'password'
+        }
+        $script:PrincipalDouble | Add-Member ScriptMethod RefreshExpiredPassword {
+            $script:PrincipalEvents += 'no-first-logon-change'
+        }
+        $script:PrincipalDouble | Add-Member ScriptMethod Dispose { $script:PrincipalEvents += 'dispose' }
+        return $script:PrincipalDouble
+    }
+    $script:PasswordFailure = $false
+    $result = New-DisabledServicePrincipal ([pscustomobject]@{Context = $null}) 'unit' 'unit@example.com' $testSecret
+    Assert-Test 'service password never expires' $result.PasswordNeverExpires
+    Assert-Test 'service initially disabled with password required and no delegation' (-not $result.Enabled -and -not $result.PasswordNotRequired -and -not $result.DelegationPermitted)
+    Assert-Test 'set password then clear first-logon change before final save' (($script:PrincipalEvents -join ',') -ceq 'save:False,password,no-first-logon-change,save:False')
+    $script:PasswordFailure = $true
+    Assert-Throws 'domain password rejection propagates' { New-DisabledServicePrincipal ([pscustomobject]@{Context = $null}) 'unit' 'unit@example.com' $testSecret }
+    Assert-Test 'password failure leaves disabled account and releases resource' (-not $script:PrincipalDouble.Enabled -and ($script:PrincipalEvents -join ',') -eq 'save:False,dispose')
+}
+
+# Real retry logic, simulated sessions: no authentication/network calls or sleeps.
+& {
+    function New-ExchangeRunspacePool {
+        param($URL, $Credential)
+        $pool = [pscustomobject]@{}
+        $pool | Add-Member ScriptMethod Open {
+            $script:OpenCount++
+            if ($script:EndpointScenario -eq 'auth-error') { throw 'simulated authentication failure' }
+        }
+        $pool | Add-Member ScriptMethod Dispose { $script:DisposeCount++ }
+        return $pool
+    }
+    function Start-Sleep { param($Seconds) $script:Sleeps += $Seconds }
+    function Invoke-EndpointCommand {
+        param($Pool, $Name, $Parameters)
+        if ($Name -eq 'Get-Command') {
+            if ($Parameters.Count -ne 0) { throw 'metadata discovery must include missing cmdlets without remote name errors' }
+            if ($script:EndpointScenario -eq 'metadata-error') { throw 'simulated metadata query failure' }
+            foreach ($commandName in $requiredEndpoint.Keys) {
+                if ($commandName -eq 'New-Mailbox' -and ($script:EndpointScenario -eq 'permanent-missing' -or
+                    ($script:EndpointScenario -eq 'command-lag' -and $script:OpenCount -eq 1))) { continue }
+                $available = @{}
+                foreach ($parameter in $requiredEndpoint[$commandName]) { $available[$parameter] = $true }
+                if ($commandName -eq 'New-Mailbox' -and $script:EndpointScenario -eq 'parameter-lag' -and $script:OpenCount -eq 1) { $available.Remove('Password') }
+                [pscustomobject]@{Name = $commandName; Parameters = $available}
+            }
+        }
+        elseif ($Name -eq 'Get-DistributionGroup') {
+            $script:ReadCount++
+            if ($script:EndpointScenario -eq 'query-error') { throw 'simulated directory query failure' }
+        }
+        else { throw 'Unexpected command in read-only check.' }
+    }
+    foreach ($scenario in @('success', 'command-lag', 'parameter-lag', 'permanent-missing', 'auth-error', 'metadata-error', 'query-error')) {
+        $script:EndpointScenario = $scenario
+        $script:OpenCount = 0; $script:DisposeCount = 0; $script:ReadCount = 0; $script:Sleeps = @()
+        $credential = [pscredential]::new('unit@example.com', $testSecret)
+        if ($scenario -in @('success', 'command-lag', 'parameter-lag')) {
+            $result = Test-ServiceEndpoint 'http://exchange.example.com/PowerShell/' $credential $specs 'dc.example.com'
+            $expectedAttempts = if ($scenario -eq 'success') { 1 } else { 2 }
+            Assert-Test "$scenario succeeds after bounded metadata checks" ($result.Attempts -eq $expectedAttempts -and $script:OpenCount -eq $expectedAttempts -and $result.BusinessWriteTest -eq 'NotRun' -and $script:ReadCount -eq 1)
+        }
+        else {
+            Assert-Throws "$scenario fails closed" { Test-ServiceEndpoint 'http://exchange.example.com/PowerShell/' $credential $specs 'dc.example.com' }
+            $expectedAttempts = if ($scenario -eq 'permanent-missing') { 3 } else { 1 }
+            Assert-Test "$scenario has bounded or no retries" ($script:OpenCount -eq $expectedAttempts)
+        }
+        Assert-Test "$scenario releases every opened session" ($script:DisposeCount -eq $script:OpenCount)
+        Assert-Test "$scenario waits only between permitted retries" ($script:Sleeps.Count -eq ($script:OpenCount - 1) -and @($script:Sleeps | Where-Object { $_ -ne 5 }).Count -eq 0)
+    }
+}
 $testSecret.Dispose()
 
 # Verify the complete MAIN order using mocks, including -WhatIf and failure handling.
@@ -221,11 +308,11 @@ function Get-MailboxDatabase { throw 'Service account setup must not query emplo
 function Read-Host {
     param([string]$Prompt, [switch]$AsSecureString)
     $script:TestPrompts += [pscustomobject]@{ Text = $Prompt; Secure = [bool]$AsSecureString }
-    if ($Prompt -eq 'Enter the NEW service account name (without domain, e.g. svc_exchange_app)' -and -not $AsSecureString) {
+    if ($Prompt -eq '输入新服务账号名（不含域名，例如 svc_exchange_app）' -and -not $AsSecureString) {
         if ($script:TestFailure -eq 'invalid-name') { return 'bad@domain' }
         return 'unit'
     }
-    if ($Prompt -eq 'Enter the NEW service account password (not your administrator password)' -and $AsSecureString) {
+    if ($Prompt -eq '输入新服务账号密码（不是管理员密码）' -and $AsSecureString) {
         if ($script:TestFailure -eq 'empty-password') { return [securestring]::new() }
         return ConvertTo-SecureString 'Test-only-never-used-123!' -AsPlainText -Force
     }
@@ -314,6 +401,7 @@ foreach ($scenario in @('preview', 'success', 'interactive', 'existing', 'invali
         Assert-Test 'main exports working connection identity and endpoint' ($script:TestSettings.EXCHANGE_USERNAME -ceq 'unit@example.com' -and $script:TestSettings.EXCHANGE_POWERSHELL_URL -eq 'http://exchange.example.com/PowerShell/' -and $script:TestSettings.EXCHANGE_DOMAIN_CONTROLLER -eq 'dc.example.com')
         Assert-Test 'main report distinguishes account setup from app configuration' ($script:TestReport.setup_mode -eq 'service_account_only')
         Assert-Test 'main report records discovered Exchange build' ($script:TestReport.exchange_server -eq 'exchange.example.com' -and $script:TestReport.exchange_version -eq 'Version 15.2 (Build 659.4)')
+        Assert-Test 'main report records requested service password policy and no mailbox' ($script:TestReport.password_never_expires -and -not $script:TestReport.change_password_at_next_logon -and -not $script:TestReport.service_mailbox_created)
         Assert-Test 'roles prepared before account and assignments' ($script:TestEvents[0] -eq 'output-directory' -and $script:TestEvents[1] -like 'role:*' -and $script:TestEvents[6] -eq 'account-disabled')
         Assert-Test 'login happens after role assignment' ([array]::IndexOf($script:TestEvents, 'read-check') -gt [array]::IndexOf($script:TestEvents, 'account-enabled:True'))
         Assert-Test 'no password or token in handoff settings' (-not $script:TestSettings.ContainsKey('EXCHANGE_PASSWORD') -and -not $script:TestSettings.ContainsKey('API_TOKEN'))

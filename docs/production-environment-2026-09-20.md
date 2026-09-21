@@ -31,7 +31,9 @@
 - 已生成 [生产应用配置模板](../deployment/bjwgby-production.env.example) 和 [Kerberos 模板](../deployment/krb5.bjwgby.conf.example)。模板不含服务账号密码或管理员密码。
 - 初始化成功报告现在记录实际 Exchange FQDN 和 `AdminDisplayVersion`，方便确认最终执行环境。
 
-当前初始化脚本 SHA-256 为 `8725250bab8617a2609b80ff5dd14f5bfbe670bca5b5c3db36cdf1e7c3d1f38b`。该文件已在测试服务器原生 Windows PowerShell 5.1 完成 95 项模拟回归，并再次通过真实测试 Exchange 的 Kerberos 只读端点检查；`BusinessWriteTest=NotRun`。这验证了脚本结构、生产 CU6 参数能力数据和连接检查逻辑，不代替生产新账号的实际创建与业务写入验收。
+2026-09-20 版本初始化脚本 SHA-256 为 `8725250bab8617a2609b80ff5dd14f5bfbe670bca5b5c3db36cdf1e7c3d1f38b`，当时完成 95 项原生 PowerShell 模拟回归及测试 Exchange 只读检查。2026-09-21 的密码设置、中文说明和权限刷新变更，见 [新版本验证记录](verification-service-account-2026-09-21.md)。生产截图参数测试仅是相关参数子集验证，不代替生产写入验收。
+
+2026-09-21 再次对照截图：View-Only Recipients 的 `Get-Recipient` 实际包含 `DomainController`，已纠正 README 和测试数据中混用测试账号限制的表述；程序原有按实际能力适配的行为保持兼容。
 
 ## 不能从截图证明的事项
 

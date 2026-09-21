@@ -1,20 +1,17 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-Create a dedicated AD user and application-only Exchange roles.
+创建普通 AD 服务账号，并授予本程序所需的 Exchange 精简权限。
 .DESCRIPTION
-Run locally on an Exchange server in Windows PowerShell 5.1 or Exchange
-Management Shell, using an administrator who can create AD users AND manage
-Exchange RBAC. Local elevation alone does not grant either directory permission.
-No Windows feature installation, endpoint ACL change, group membership grant,
-firewall change, credential delegation or server security downgrade is performed.
-No employee mailbox is created by this installer.
-Designed for an isolated intranet: uses installed Windows/Exchange components
-and internal AD/Exchange services only. No Internet probe or package download.
-With no arguments, enter only the NEW service account name and password.
-The AD domain/DC and Exchange endpoint are discovered automatically. Employee
-mail domains, databases and placement belong to application deployment, not
-service account creation. On success the script returns the account UPN.
+在 Exchange 服务器的 64 位 Windows PowerShell 5.1 / Exchange Management Shell 执行。
+执行管理员需要 AD 创建用户和 Exchange RBAC 管理权限；仅本机管理员权限不够。
+正常执行只输入新账号短名称、新密码，域名、域控和连接地址自动发现。
+创建的账号没有邮箱；账号@域名是登录名。密码永不过期，不要求首次登录修改。
+本脚本会创建 AD 用户、4 个精简角色及其分配，必要时创建普通通讯组权限范围。
+只授予员工邮箱创建、收件人查询和普通通讯组成员维护权限；不加管理员组。
+不安装 Windows 功能，不修改防火墙、证书或现有角色，不下载组件，不访问互联网。
+成功前以新账号进行只读登录检查；失败时尝试禁用本次新账号，保留报告供排查。
+员工数据库、邮箱后缀由程序部署配置决定，不在此处询问，也不在此处创建员工邮箱。
 .EXAMPLE
 .\Initialize-ExchangeAutomation.ps1 -ServiceAccountName svc_exchange_app -WhatIf
 .EXAMPLE
@@ -29,9 +26,11 @@ param(
     [string] $OutputDirectory
 )
 
+# 遇到错误立即停止，防止某一步失败后继续授权或误报成功。
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+# 【权限清单】只允许 8 个业务命令；New-Mailbox 是授予程序的权限，此处不会执行。
 function Get-ApplicationRoleSpecifications {
     param([string] $Prefix)
     # Read-only cmdlets retain their parent parameters for Exchange compatibility.
@@ -75,16 +74,19 @@ function Get-ApplicationRoleSpecifications {
     )
 }
 
+# 【范围定义】覆盖全部现有及未来普通静态通讯组，排除安全组和动态组。
 function Get-NormalGroupFilter {
     # All present/future ordinary distribution groups, not a maintained allowlist.
     return "RecipientTypeDetails -eq 'MailUniversalDistributionGroup'"
 }
 
+# 【格式处理】仅消除 Exchange 回读过滤条件时增加的空白和括号。
 function Get-NormalizedRecipientFilter {
     param($Filter)
     return (([string]$Filter -replace '[\s()]', '').ToLowerInvariant())
 }
 
+# 【只读】已有范围必须与目标条件完全匹配，且不含 OU 根或独占限制，才允许复用。
 function Find-ReusableNormalGroupScope {
     param([object[]] $Scopes)
     $expected = Get-NormalizedRecipientFilter (Get-NormalGroupFilter)
@@ -97,6 +99,7 @@ function Find-ReusableNormalGroupScope {
     return $null
 }
 
+# 【权限计算】写命令只保留业务必需参数；查询参数保留父角色能力以兼容各版本。
 function Get-AllowedEntryParameters {
     param($Specification, [string] $CommandName, [string[]] $ParentParameters)
     $required = @($Specification.Commands[$CommandName])
@@ -111,6 +114,7 @@ function Get-AllowedEntryParameters {
     return @($ParentParameters | Where-Object { $required -contains $_ -or $common -contains $_ })
 }
 
+# 【只读】按 RoleType 识别内置角色，不依赖中英文名称；缺少必需权限时停止。
 function Resolve-RolePlans {
     param([object[]] $Specifications, [object[]] $AllRoles, [string] $DC)
     foreach ($spec in $Specifications) {
@@ -134,6 +138,7 @@ function Resolve-RolePlans {
     }
 }
 
+# 【只读回查】确认新角色实际保存的命令及参数与精简清单一致。
 function Assert-RoleContents {
     param($Plan, [string] $DC)
     $entries = @(Get-ManagementRoleEntry -Identity "$($Plan.Name)\*" -DomainController $DC -ErrorAction Stop)
@@ -145,6 +150,7 @@ function Assert-RoleContents {
     }
 }
 
+# 【写入】仅创建本次专用子角色，先裁剪再授权；不修改内置角色或其他人的角色。
 function New-ApplicationRole {
     param($Plan, [string] $DC)
     # Only called for names proven absent before writes. Never edit built-in or
@@ -163,6 +169,7 @@ function New-ApplicationRole {
     Assert-RoleContents $Plan $DC
 }
 
+# 【只读保护】同名对象已经存在时停止，避免覆盖或向旧账号叠加权限。
 function Assert-NoNameCollisions {
     param([string[]] $Names, [object[]] $Existing, [string] $Kind)
     foreach ($item in $Existing) {
@@ -170,6 +177,7 @@ function Assert-NoNameCollisions {
     }
 }
 
+# 【只读回查】拒绝额外/可委派角色，并确认两项组维护授权都限制为普通通讯组。
 function Assert-ApplicationAssignments {
     param([object[]] $Plans, [object[]] $Assignments, [string] $ScopeName)
     $names = @($Plans | ForEach-Object { "$($_.Name)-Assignment" })
@@ -194,6 +202,7 @@ function Assert-ApplicationAssignments {
     }
 }
 
+# 【兼容处理】兼容 EMS 返回的对象名或远程序列化字符串。
 function Get-ExchangeObjectName {
     param($Value)
     # EMS versions may return an ADObjectId or its remoting string projection.
@@ -202,6 +211,7 @@ function Get-ExchangeObjectName {
     throw 'Cannot verify Exchange object name from the returned metadata.'
 }
 
+# 【本机加载】使用服务器已安装的 Exchange 管理组件，不联网安装或修改执行策略。
 function Initialize-ManagementShell {
     if ($PSVersionTable.PSEdition -ne 'Desktop' -or -not [Environment]::Is64BitProcess) {
         throw 'Use 64-bit Windows PowerShell 5.1 on the Exchange server, not PowerShell 7.'
@@ -227,6 +237,7 @@ function Initialize-ManagementShell {
     # duplicate command/parameter preflight for the whole management shell.
 }
 
+# 【只读发现】从本机所属 AD 域选择可写域控；使用 Windows 自带 .NET，无需 RSAT。
 function Get-DirectoryContext {
     param([string] $RequestedDC)
     # Built into Windows/.NET Framework; no RSAT AD module installation required.
@@ -252,6 +263,7 @@ function Get-DirectoryContext {
     finally { $root.Dispose(); $domain.Dispose() }
 }
 
+# 【只读保护】同时检查短名称和登录名，绝不重置或接管已有账号。
 function Assert-NewAccount {
     param($Directory, [string] $Sam, [string] $UPN)
     foreach ($identity in @(
@@ -266,9 +278,16 @@ function Assert-NewAccount {
     }
 }
 
+# 【本机对象】构造尚未保存的普通 AD 用户对象；实际写入由下一个函数完成。
+function New-ServicePrincipal {
+    param($Context)
+    return [System.DirectoryServices.AccountManagement.UserPrincipal]::new($Context)
+}
+
+# 【写入 AD】先创建禁用账号，再设密码；没有 New-Mailbox / Enable-Mailbox 操作。
 function New-DisabledServicePrincipal {
     param($Directory, [string] $Sam, [string] $UPN, [System.Security.SecureString] $Secret)
-    $principal = [System.DirectoryServices.AccountManagement.UserPrincipal]::new($Directory.Context)
+    $principal = New-ServicePrincipal $Directory.Context
     try {
         $principal.SamAccountName = $Sam
         $principal.Name = $Sam
@@ -277,12 +296,14 @@ function New-DisabledServicePrincipal {
         $principal.Description = 'Exchange automation: create mailbox, read recipients, manage ordinary distribution group members.'
         $principal.Enabled = $false
         $principal.PasswordNotRequired = $false
-        $principal.PasswordNeverExpires = $false
+        $principal.PasswordNeverExpires = $true
         $principal.DelegationPermitted = $false
         $principal.Save()
-        # .NET requires plaintext for SetPassword; transient only, never exported/logged.
+        # .NET 设置密码时短暂使用明文，仅在内存中，不回显、不写报告；密码复杂度仍由 AD 检查。
         $credential = [pscredential]::new($UPN, $Secret)
         $principal.SetPassword($credential.GetNetworkCredential().Password)
+        # 将 pwdLastSet 更新为当前时间，明确取消“下次登录必须更改密码”。
+        $principal.RefreshExpiredPassword()
         $principal.Save()
         return $principal
     }
@@ -293,6 +314,7 @@ function New-DisabledServicePrincipal {
     }
 }
 
+# 【只读远程调用】用于查询命令元数据和一条通讯组；不执行任何员工业务写入。
 function Invoke-EndpointCommand {
     param($Pool, [string] $Name, [hashtable] $Parameters)
     $powershell = [powershell]::Create()
@@ -310,6 +332,7 @@ function Invoke-EndpointCommand {
     finally { $powershell.Dispose() }
 }
 
+# 【连接配置】目标是内网 Exchange；微软 URI 仅为协议标识，不是要访问的网站。
 function New-ExchangeConnectionInfo {
     param([string] $URL, [pscredential] $Credential)
     # URL is the internal Exchange network destination. The second argument is
@@ -324,29 +347,48 @@ function New-ExchangeConnectionInfo {
     return $connection
 }
 
-function Test-ServiceEndpoint {
-    param([string] $URL, [pscredential] $Credential, [object[]] $Specifications, [string] $DC)
+# 【连接对象】创建独立 Exchange 会话；不申请普通 Windows PowerShell 管理权限。
+function New-ExchangeRunspacePool {
+    param([string] $URL, [pscredential] $Credential)
     $connection = New-ExchangeConnectionInfo $URL $Credential
-    $pool = [runspacefactory]::CreateRunspacePool(1, 1, $connection, $Host)
-    try {
-        $pool.Open()
-        $required = Get-RequiredEndpointParameters $Specifications
-        $metadata = @(Invoke-EndpointCommand $pool 'Get-Command' @{ Name = [string[]]@($required.Keys) })
-        foreach ($name in $required.Keys) {
-            $commands = @($metadata | Where-Object { $_.Name -eq $name })
-            if ($commands.Count -ne 1) { throw "Service endpoint is missing $name. RBAC replication/cache refresh may be pending." }
-            foreach ($parameter in $required[$name]) {
-                if (-not $commands[0].Parameters.ContainsKey($parameter)) { throw "Service endpoint is missing $name/$parameter." }
-            }
-        }
-        $null = Invoke-EndpointCommand $pool 'Get-DistributionGroup' @{
-            RecipientTypeDetails = 'MailUniversalDistributionGroup'; ResultSize = 1; DomainController = $DC
-        }
-        return [pscustomobject]@{ Authentication = 'Kerberos'; Endpoint = 'Microsoft.Exchange'; ReadOnlyCheck = 'Passed'; BusinessWriteTest = 'NotRun' }
-    }
-    finally { $pool.Dispose() }
+    return [runspacefactory]::CreateRunspacePool(1, 1, $connection, $Host)
 }
 
+# 【只读验收】仅在登录成功但权限元数据未齐全时，间隔 5 秒重新建会话，最多检查 3 次。
+# 认证失败、查询报错直接停止，避免反复尝试错误密码；最终失败仍由主流程禁用账号。
+function Test-ServiceEndpoint {
+    param([string] $URL, [pscredential] $Credential, [object[]] $Specifications, [string] $DC)
+    $required = Get-RequiredEndpointParameters $Specifications
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if ($attempt -gt 1) { Start-Sleep -Seconds 5 }
+        $pool = New-ExchangeRunspacePool $URL $Credential
+        try {
+            $pool.Open()
+            # 不按名称筛选，避免缺失命令先触发远程错误，使后面的缓存延迟判断失效。
+            $metadata = @(Invoke-EndpointCommand $pool 'Get-Command' @{})
+            $missing = @()
+            foreach ($name in $required.Keys) {
+                $commands = @($metadata | Where-Object { $_.Name -eq $name })
+                if ($commands.Count -ne 1) { $missing += $name; continue }
+                foreach ($parameter in $required[$name]) {
+                    if (-not $commands[0].Parameters.ContainsKey($parameter)) { $missing += "$name/$parameter" }
+                }
+            }
+            if ($missing.Count -gt 0) {
+                if ($attempt -eq 3) { throw "Service endpoint still lacks required RBAC capabilities: $($missing -join ', ')." }
+                Write-Warning '登录已成功，但部分命令权限尚未生效；5 秒后刷新会话检查。'
+                continue
+            }
+            $null = Invoke-EndpointCommand $pool 'Get-DistributionGroup' @{
+                RecipientTypeDetails = 'MailUniversalDistributionGroup'; ResultSize = 1; DomainController = $DC
+            }
+            return [pscustomobject]@{ Authentication = 'Kerberos'; Endpoint = 'Microsoft.Exchange'; ReadOnlyCheck = 'Passed'; BusinessWriteTest = 'NotRun'; Attempts = $attempt }
+        }
+        finally { $pool.Dispose() }
+    }
+}
+
+# 【权限计算】合并多个子角色对同一个命令提供的参数，用于实际会话验证。
 function Get-RequiredEndpointParameters {
     param([object[]] $Specifications)
     $required = @{}
@@ -358,11 +400,12 @@ function Get-RequiredEndpointParameters {
     return $required
 }
 
+# 【输入 1】只输入新账号短名称；域后缀自动追加，已有账号不允许复用。
 function Resolve-ServiceAccountName {
     param([string] $Requested, [switch] $Preview)
     if ([string]::IsNullOrWhiteSpace($Requested)) {
         if ($Preview) { throw 'Specify -ServiceAccountName when using -WhatIf; no password is required.' }
-        $Requested = Read-Host 'Enter the NEW service account name (without domain, e.g. svc_exchange_app)'
+        $Requested = Read-Host '输入新服务账号名（不含域名，例如 svc_exchange_app）'
     }
     # Read-Host input needs the same validation as a bound command-line argument.
     if ($Requested -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,19}$') {
@@ -371,6 +414,7 @@ function Resolve-ServiceAccountName {
     return $Requested
 }
 
+# 【写入本地报告】只保存账号、连接和检查结果，不保存密码；文件写入本次新目录。
 function Write-SetupHandoff {
     param([string] $Directory, $Report, [hashtable] $Settings)
     # Directory was newly created by this invocation. Exports contain no password/token.
@@ -389,6 +433,7 @@ function Write-SetupHandoff {
 }
 
 # MAIN -- tests load only function definitions from this file's AST.
+# 【主流程】以下按顺序完成查询、角色准备、建号、授权和只读验收。
 $principal = $null
 $directory = $null
 $createdRoles = @()
@@ -398,6 +443,7 @@ $scopeReused = $false
 $stage = 'preflight'
 $reportDirectory = $null
 try {
+    # 1. 只读准备：确定域与连接地址，确认账号、角色名未占用，计算所需权限。
     $ServiceAccountName = Resolve-ServiceAccountName $ServiceAccountName -Preview:$WhatIfPreference
     Initialize-ManagementShell
     $directory = Get-DirectoryContext $DomainController
@@ -431,18 +477,21 @@ try {
     Write-Host "Account: $upn; Exchange endpoint: $url; DC: $dc; Exchange: $exchangeVersion"
     Write-Host 'Scope: organization-wide mailbox creation; all present/future ordinary distribution group memberships. No employee OU or group-name allowlist.'
     Write-Host 'No mailbox deletion/disable/reset, group creation/deletion, server administration, role administration or Windows shell rights will be granted.'
+    # 2. 输入密码并建立新报告目录；-WhatIf 在此返回，不创建任何对象或文件。
     if (-not $PSCmdlet.ShouldProcess($upn, 'Create new dedicated AD account and application-only Exchange RBAC roles')) { return }
-    if ($null -eq $Password) { $Password = Read-Host 'Enter the NEW service account password (not your administrator password)' -AsSecureString }
+    if ($null -eq $Password) { $Password = Read-Host '输入新服务账号密码（不是管理员密码）' -AsSecureString }
     if ($Password.Length -eq 0) { throw 'An empty service password is not allowed.' }
     if (-not $OutputDirectory) { $OutputDirectory = Join-Path $PSScriptRoot ("exchange-handoff-" + [guid]::NewGuid().ToString('N')) }
     if (Test-Path -LiteralPath $OutputDirectory) { throw 'OutputDirectory already exists; choose a new directory. Existing files are never overwritten.' }
     $null = New-Item -ItemType Directory -Path $OutputDirectory -ErrorAction Stop
     $reportDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
+    # 3. 创建精简子角色，此时尚未授权给任何账号；逐项回读确认。
     $stage = 'create-unassigned-roles'
     foreach ($plan in $plans) {
         $createdRoles += $plan.Name
         New-ApplicationRole $plan $dc
     }
+    # 4. 创建或复用普通通讯组范围；不按员工 OU 或组名限制，不包含安全组。
     $stage = 'create-group-type-scope'
     if (-not $scopeReused) {
         $null = New-ManagementScope -Name $scopeName -RecipientRestrictionFilter (Get-NormalGroupFilter) -DomainController $dc -ErrorAction Stop
@@ -453,10 +502,12 @@ try {
     $actualFilter = Get-NormalizedRecipientFilter $scope.RecipientFilter
     $expectedFilter = Get-NormalizedRecipientFilter (Get-NormalGroupFilter)
     if ($scope.Exclusive -or $scope.RecipientRoot -or $actualFilter -ne $expectedFilter) { throw 'New group scope failed readback verification.' }
+    # 5. 创建禁用状态的普通 AD 账号，密码永不过期且无需首次改密，不创建邮箱。
     $stage = 'create-disabled-account'
     $principal = New-DisabledServicePrincipal $directory $ServiceAccountName $upn $Password
     $accountGuid = $principal.Guid.ToString()
     # Fixed GUID/DC after creation; never add the service account to an admin group.
+    # 6. 只给本次账号 GUID 分配精简角色，启用 Exchange 远程权限并回查分配。
     $stage = 'assign-application-roles'
     foreach ($plan in $plans) {
         $assignment = @{ Name = "$($plan.Name)-Assignment"; Role = $plan.Name; User = $accountGuid; DomainController = $dc; ErrorAction = 'Stop' }
@@ -470,12 +521,14 @@ try {
     # Each new role was already trimmed and verified before assignment.
     $effective = @(Get-ManagementRoleAssignment -RoleAssignee $accountGuid -DomainController $dc -ErrorAction Stop)
     Assert-ApplicationAssignments $plans $effective $scopeName
+    # 7. 授权核对通过后启用账号；以新账号连接内网 Exchange，执行只读检查。
     $stage = 'enable-account'
     $principal.Enabled = $true
     $principal.Save()
     $stage = 'verify-service-login'
-    # Only one authentication attempt: do not loop wrong passwords into lockout.
+    # 认证错误不重试；仅成功认证后的权限缓存延迟允许有限次重查。
     $check = Test-ServiceEndpoint $url ([pscredential]::new($upn, $Password)) $specifications $dc
+    # 8. 保存不含密码的交付文件；只读检查通过后才输出 SUCCESS 和完整登录名。
     $settings = @{
         EXCHANGE_CONNECTION_MODE = 'direct'
         EXCHANGE_POWERSHELL_URL = $url; EXCHANGE_AUTH = 'kerberos'; EXCHANGE_USERNAME = $upn
@@ -488,17 +541,20 @@ try {
         exchange_server = $exchangeFqdn; exchange_version = $exchangeVersion
         roles = $createdRoles; assignments = $createdAssignments; group_scope_name = $scopeName
         group_scope = (Get-NormalGroupFilter); group_scope_reused = $scopeReused
-        employee_ou_restriction = $false; password_exported = $false; password_never_expires = $false
+        employee_ou_restriction = $false; password_exported = $false; password_never_expires = $true
+        change_password_at_next_logon = $false; service_mailbox_created = $false
         verification = $check; linux_connectivity_verified = $false; business_write_verified = $false
         next_step = 'Use this account and the password entered. Connection details are in connection.env.example. Employee mail domain/database and Linux deployment are configured separately by the application operator.'
     }
     Write-SetupHandoff $reportDirectory $report $settings
     Write-Host "SUCCESS: $upn. Service login and required command parameters verified."
     Write-Host "Handoff files: $reportDirectory (no passwords). The password is the one you entered."
-    Write-Warning 'Password expiry follows domain policy: arrange rotation. Linux connectivity and isolated mailbox/group writes still require acceptance.'
+    Write-Host '服务账号无邮箱；密码永不过期，首次登录无需改密。请妥善保管输入的密码。'
+    Write-Warning '以上仅为服务器端只读验收；Linux 连接及隔离员工的创建、加组、离组仍需验收。'
     Write-Output $upn
 }
 catch {
+    # 【失败保护】尝试禁用本次新账号并记录阶段；保留对象，不删除、不覆盖旧数据。
     $setupError = $_
     $accountDisabled = $null
     if ($null -ne $principal) {
@@ -523,6 +579,7 @@ catch {
     throw 'Exchange automation setup did not complete; do not treat the account as ready.'
 }
 finally {
+    # 【释放本机资源】关闭目录对象；不更改服务器配置。
     if ($null -ne $principal) { $principal.Dispose() }
     if ($null -ne $directory) { $directory.Context.Dispose() }
 }

@@ -1,5 +1,7 @@
 # 两项输入、精简与隔离内网说明验证（2026-09-20）
 
+本文保留 2026-09-20 版本证据；2026-09-21 已按用户要求改为服务密码永不过期、无需首次改密，并调整权限刷新检查，见 [新版本验证记录](verification-service-account-2026-09-21.md)。下文“当前”均指当时版本。
+
 ## 当前交付
 
 [初始化脚本](../deployment/Initialize-ExchangeAutomation.ps1) 的普通操作只有两次提示：新服务账号短名称、新密码。员工只有一个邮箱后缀，仍由应用部署配置一次，不在建号时询问；数据库及员工 UPN/OU 也不是建号输入。
@@ -12,7 +14,7 @@
 
 - 在测试服务器原生 **Windows PowerShell 5.1** 执行 **95/95 回归通过**。AD/RBAC 写入全部模拟，真实目录写入和 Exchange 写入均为 0。
 - 覆盖恰好两次提示、只返回完整账号名、拒绝覆盖旧账号、空密码/无效名称、`-WhatIf` 零写入、授权或登录失败禁用账号、固定 8 个业务命令、普通组类型范围和危险参数裁剪。
-- 加入根据生产截图整理的 Exchange 2019 CU6 四类根角色和八个业务命令参数数据；当前初始化脚本所需参数均存在，并验证 `Get-Recipient` 缺少非必需 `DomainController` 参数时仍可兼容。
+- 加入根据生产截图整理的 Exchange 2019 CU6 四类根角色和八个业务命令的相关参数子集；不是完整角色导出。2026-09-21 复核发现当时遗漏了生产 View-Only Recipients 的 `Get-Recipient/DomainController` 参数，新版测试已纠正；保留无 DC 的受限测试账号兼容场景。
 - 新增连接配置实对象检查：`ConnectionUri` 为传入的内网 Exchange 地址；`ShellUri` 为固定 Exchange 协议标识；Kerberos 保留；`ProxyAccessType=NoProxyServer`；不跟随重定向。连接配置对象的构造本身不打开会话。
 - AST 检查未发现常见网页探测或在线安装命令。该检查只约束本仓库脚本，不把静态检查等同于整台服务器的网络抓包。
 - 使用已有测试服务账号实际执行**当前版本**的 `Test-ServiceEndpoint`，通过 Kerberos 登录测试 Exchange、业务命令/参数检查及只读查询：`ReadOnlyCheck=Passed`、`BusinessWriteTest=NotRun`。真实服务端写入为 0。
