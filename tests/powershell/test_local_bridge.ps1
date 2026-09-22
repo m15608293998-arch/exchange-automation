@@ -1,8 +1,8 @@
-# Run in Windows PowerShell 5.1. All Exchange file reads and commands are mocked.
+﻿# Run in Windows PowerShell 5.1. All Exchange file reads and commands are mocked.
 param([string] $BridgeText)
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrEmpty($BridgeText)) {
-    $BridgeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\local\Invoke-ExchangeOperation.ps1') -Raw -Encoding UTF8
+    $BridgeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\automation\local\Invoke-ExchangeOperation.ps1') -Raw -Encoding UTF8
 }
 $tokens = $null; $errors = $null
 $null = [System.Management.Automation.Language.Parser]::ParseInput($BridgeText, [ref]$tokens, [ref]$errors)

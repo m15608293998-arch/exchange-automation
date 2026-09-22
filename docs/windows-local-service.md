@@ -30,9 +30,11 @@ py -3.13 -m pip --isolated --disable-pip-version-check install --no-index --find
 
 如果未安装 Python 启动器，把 `py -3.13` 换成 Python 的绝对路径，例如 `& 'C:\Program Files\ExchangeAutomationPython\python.exe'`。服务使用同一解释器的 `PythonService.exe`。
 
+服务账号权限由管理员手动设置：在“本地安全策略 → 本地策略 → 用户权限分配 → 作为服务登录”加入该账号；域控或域 GPO 控制此项时由域管理员在对应策略配置。文件夹权限用资源管理器“属性 → 安全 → 高级”设置：代码/Python/配置只读和执行，`state` 目录修改，保留 SYSTEM 和 Administrators 完全控制。不需要本地管理员或远程桌面权限。
+
 ## 2. 业务配置
 
-将 [配置模板](../deployment/windows-local-config.json.example) 复制为 `C:\ProgramData\ExchangeAutomation\config.json`。模板中的生产值为：
+将 [配置模板](../deployment/config.example.json) 复制为 `C:\ProgramData\ExchangeAutomation\config.json`。模板中的生产值为：
 
 | 配置 | 生产值/说明 |
 |---|---|
@@ -45,7 +47,19 @@ py -3.13 -m pip --isolated --disable-pip-version-check install --no-index --find
 
 测试环境使用其自己的数据库和域控，不要把测试配置覆盖进生产模板。本机 Exchange 地址由本机 FQDN 获取，不再配置远程 Exchange 地址或 AD 密码。
 
+手动准备配置（首次部署，已有配置不要覆盖）：
+
+```powershell
+New-Item -ItemType Directory -Path 'C:\ProgramData\ExchangeAutomation\state' -Force | Out-Null
+Copy-Item 'C:\ExchangeAutomation\deployment\config.example.json' 'C:\ProgramData\ExchangeAutomation\config.json'
+notepad 'C:\ProgramData\ExchangeAutomation\config.json'
+```
+
+带入内网主要核对 `project_directory`、`state_directory`、`http_address`；生产数据库、邮箱后缀和 DC 已按截图预填。管理员提供的新账号/密码只在注册服务时输入，不写到 JSON。
+
 `api_token` 保持为空，Postman 使用 No Auth。生产请求鉴权交由接入层对接 Keycloak；接入时应确保业务请求经过该层。本服务不会自动新增 JWT/Bearer 要求，也不会调整 WinRM 或防火墙。只有部署人员主动配置 `api_token` 时，已有的可选 Bearer 校验才启用。
+
+若外部访问超时而本机 `/healthz` 正常，由管理员按批准的网关/调用方 IP 放行所选 TCP 端口，不关闭整个防火墙。Keycloak 网关应负责身份及业务权限校验，并配置 TLS 和请求超时；业务端口限制到受信调用方，避免绕过接入层。默认业务超时 300 秒，网关读取超时应略长于它；超时不能直接认定未执行或盲目重试。
 
 ## 3. 注册和运行服务
 
@@ -60,6 +74,8 @@ Get-Service ExchangeAutomation
 注册入口只询问 `AD域\账号` 或 `账号@AD域`、密码，注册 Windows 服务；不负责安装环境或授权。密码由 Windows SCM 保管，不写入配置、日志或命令行。服务以该受限 AD 账号运行，业务权限仍由 Exchange RBAC 控制。
 
 HTTP 使用固定线程数的 Waitress；默认最多同时运行 2 个员工操作，同一员工并发返回 409。停止服务先拒绝新业务，再等待正在执行的操作完成（受 `operation_timeout_seconds` 限制），最后释放单实例锁。管理员升级前先 `Stop-Service`，确认已停止，再更新应用 wheel 和 PowerShell 脚本。
+
+修改源码后，已安装的 Python wheel 不会自动更新。升级时保留 `config.json` 和整个 `state` 目录，停服后带入新 wheel 和匹配的 `automation` 脚本，手动 `pip install --no-index --find-links=… --force-reinstall exchange-automation-local==<版本>`，再启动；不要重复注册同名服务。出现启动问题，查看 Windows“事件查看器 → 应用程序”和 `state\service.log`，优先核对服务登录权、密码、全机 Python 路径及目录读写权限。
 
 离职查询需要 `Get-DistributionGroup -Filter` 只读参数。新版建号脚本会检查它。原脚本创建的查询角色保留父角色参数，通常已具备；若人为裁剪过角色，需管理员检查并仅补上此查询参数，不扩大写权限。
 
@@ -85,7 +101,7 @@ POST /api/exchange/users/testemployee/offboard
 本地模拟回归：
 
 ```powershell
-py -3.13 -m unittest discover -s exchange_local\tests -v
+py -3.13 -m unittest discover -s tests\python -v
 ```
 
 模拟测试不代替真实 Exchange 验证，更不能保证所有生产域策略、ACL、独占范围都兼容；上线前仍应用生产服务账号做隔离验收。

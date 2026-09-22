@@ -28,10 +28,10 @@
 - Kerberos 连接固定使用真实服务器 FQDN `EXCHANGE.BJWGBY.COM`，不默认使用 `mail.bjwgby.com` 别名；截图没有证明别名注册了 HTTP SPN。
 - 生产四类内置根角色均唯一存在，读写范围为 Organization；截图中的八个业务命令参数覆盖当前脚本要求。已把这组 CU6 能力作为独立回归数据加入测试。
 - 生产没有现有普通通讯组自定义范围，因此第一次成功运行预计会新建一个只匹配 `MailUniversalDistributionGroup` 的范围。脚本不会修改现有范围。
-- 已生成 [生产应用配置模板](../deployment/bjwgby-production.env.example) 和 [Kerberos 模板](../deployment/krb5.bjwgby.conf.example)。模板不含服务账号密码或管理员密码。
+- 当前使用 [本机服务配置模板](../deployment/config.example.json)，不再使用 Linux 环境变量/Kerberos 文件。模板不含服务账号密码或管理员密码。
 - 初始化成功报告现在记录实际 Exchange FQDN 和 `AdminDisplayVersion`，方便确认最终执行环境。
 
-2026-09-20 版本初始化脚本 SHA-256 为 `8725250bab8617a2609b80ff5dd14f5bfbe670bca5b5c3db36cdf1e7c3d1f38b`，当时完成 95 项原生 PowerShell 模拟回归及测试 Exchange 只读检查。2026-09-21 的密码设置、中文说明和权限刷新变更，见 [新版本验证记录](verification-service-account-2026-09-21.md)。生产截图参数测试仅是相关参数子集验证，不代替生产写入验收。
+2026-09-20 版本初始化脚本 SHA-256 为 `8725250bab8617a2609b80ff5dd14f5bfbe670bca5b5c3db36cdf1e7c3d1f38b`，当时完成 95 项原生 PowerShell 模拟回归及测试 Exchange 只读检查，历史记录可从 Git 恢复。当前验证见 [本机验收](verification/local-2026-09-22.md)。生产截图参数测试仅是相关参数子集验证，不代替生产写入验收；新加入的只读 `Get-DistributionGroup -Filter` 要求仍由建号脚本核对实际父角色。
 
 2026-09-21 再次对照截图：View-Only Recipients 的 `Get-Recipient` 实际包含 `DomainController`，已纠正 README 和测试数据中混用测试账号限制的表述；程序原有按实际能力适配的行为保持兼容。
 
@@ -39,9 +39,9 @@
 
 - 截图只能证明命令/参数可见，不能证明执行管理员拥有完整的 AD 建号和 RBAC 委派写权限。
 - 不能判断是否启用了会阻止 Exchange 创建 AD 安全主体或维护组成员的 AD split permissions，也不能证明对象 ACL 没有额外拒绝。
-- 没有生产服务账号，因此尚未验证该账号从 Linux 登录、创建邮箱、写入数据库或维护普通通讯组。
-- 没有查询员工对象；`EXCHANGE_UPN_SUFFIX=bjwgby.com` 是根据单一 AD 域、无额外 UPN 后缀得出的新员工配置。管理员若另有员工登录命名规范，应在业务验收前指出。
-- 截图没有给出 Linux 业务服务器 IP；`HTTP_ADDRESS` 必须在部署时填 Linux 本机实际内网 IP，不能填 Exchange 地址。
+- 没有生产服务账号，因此尚未验证该账号作为本机 Windows 服务登录、创建邮箱、写入数据库或维护普通通讯组。
+- 没有查询员工对象；`upn_suffix=bjwgby.com` 是根据单一 AD 域、无额外 UPN 后缀得出的新员工配置。管理员若另有员工登录命名规范，应在业务验收前指出。
+- `http_address` 是 Exchange 本机 Python 服务的监听地址，示例 `0.0.0.0:18082`；生产接入方地址及端口放行由部署时确定。
 
 ## 版本风险
 

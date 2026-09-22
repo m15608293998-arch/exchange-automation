@@ -1,23 +1,17 @@
 # Local secrets and runtime configuration
 .env
 .env.*
-!.env.example
-automation/inventory/hosts.local.yml
 
 # Build and test output
-/bin/
-/coverage.out
 /.venv/
 /wheelhouse/
+/build/
+/dist/
+*.egg-info/
 __pycache__/
 *.pyc
-/collections/
 /exchange服务器信息/
 *.log
-
-# Local Ansible state
-.ansible/
-*.retry
 
 # Development references supplied out of band; not part of the application.
 /*.jpg

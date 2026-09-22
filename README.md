@@ -2,7 +2,22 @@
 
 服务部署在 Exchange 服务器本机。Python 提供 HTTP API，本机 Windows PowerShell 5.1 连接本机 `Microsoft.Exchange` 端点，并按专用 AD 服务账号的 Exchange RBAC 权限执行操作。
 
-管理员使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建服务账号和专用角色。Python 服务的离线安装、配置与验收见 [Windows 本机服务部署说明](docs/windows-local-service.md)，生产参数模板见 [Windows 配置模板](deployment/windows-local-config.json.example)。
+管理员使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建服务账号和专用角色。Python 服务的手动环境准备、配置与验收见 [Windows 本机服务部署说明](docs/windows-local-service.md)，生产参数模板见 [配置示例](deployment/config.example.json)。
+
+## 目录
+
+```text
+exchange_local/       Python API、业务编排和 Windows 服务入口
+automation/local/     本机 PowerShell 桥接入口
+automation/scripts/   固定的 Exchange 业务操作
+deployment/           管理员建号、只读采集脚本和配置示例
+tests/python/         Python 回归测试
+tests/powershell/     PowerShell 回归测试（模拟，不修改 AD）
+docs/                 当前部署、建号和生产信息说明
+docs/verification/    当前本机及外部接口验收记录
+```
+
+依赖以 `pyproject.toml` 为准。旧 Go、Ansible、Linux 远程直连代码、配置和过时文档已移除，可从 Git 历史恢复。Python、依赖和系统权限由部署人员手动准备，业务服务不会自动安装环境。
 
 ## 业务边界
 
@@ -92,13 +107,16 @@ POST /api/exchange/users/slpeng/offboard
 Python 回归：
 
 ```powershell
-py -3.13 -m unittest discover -s exchange_local\tests -v
+py -3.13 -m unittest discover -s tests\python -v
 ```
 
 PowerShell 5.1 桥接回归：
 
 ```powershell
-.\automation\tests\local_bridge_regression.ps1
+.\tests\powershell\test_local_bridge.ps1
+.\tests\powershell\test_operations.ps1
+.\tests\powershell\test_admin_account.ps1
+.\tests\powershell\test_environment_collection.ps1
 ```
 
-已在测试 Exchange 上以真实受限服务账号验证 Windows 服务运行、员工创建、加组/退组、幂等及执行中停服，见 [本机服务验收报告](docs/verification-local-2026-09-22.md)。生产上线前仍需用生产服务账号做隔离验收。
+已在测试 Exchange 上以真实受限服务账号验证 Windows 服务运行、员工创建、加组/退组、幂等及执行中停服，见 [本机验收](docs/verification/local-2026-09-22.md) 和 [外部接口验收](docs/verification/external-2026-09-22.md)。生产上线前仍需用生产服务账号做隔离验收。

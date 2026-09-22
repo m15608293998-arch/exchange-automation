@@ -1,3 +1,0 @@
-# Optional legacy Ansible transport; default direct mode uses requirements-direct.txt.
--r requirements-direct.txt
-ansible-core==2.15.13

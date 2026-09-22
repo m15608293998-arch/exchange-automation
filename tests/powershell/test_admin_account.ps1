@@ -1,4 +1,4 @@
-﻿# PowerShell 5.1 regression for the administrator installer. All AD/RBAC writes
+﻿# PowerShell 5.1 regression for the administrator account script. All AD/RBAC writes
 # below are mocks. Only isolated test handoff files may be written locally.
 param([string] $SourceText, [string] $SourcePath)
 $ErrorActionPreference = 'Stop'

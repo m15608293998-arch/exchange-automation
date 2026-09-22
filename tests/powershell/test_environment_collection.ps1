@@ -1,4 +1,4 @@
-# Native Windows PowerShell 5.1 checks. No AD/Exchange queries or writes here.
+# Environment-collector regression. No AD/Exchange queries or writes here.
 param([string] $SourceText, [string] $SourcePath)
 $ErrorActionPreference = 'Stop'
 if (-not $SourceText) {

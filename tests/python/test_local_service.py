@@ -1,3 +1,5 @@
+"""Local service validation, orchestration, HTTP and process regression tests."""
+
 import io
 import json
 import logging

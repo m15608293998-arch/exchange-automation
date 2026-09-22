@@ -1,9 +1,9 @@
-# Run with PowerShell 5.1+ and a hashtable/PSCustomObject containing script texts.
+# Business-operation regression; all Exchange commands below are mocked.
 # All Exchange commands below are mocks. This suite never changes AD/Exchange.
 param($Sources, [string] $ScriptsPath)
 $ErrorActionPreference = 'Stop'
 if ($null -eq $Sources) {
-    if ([string]::IsNullOrWhiteSpace($ScriptsPath)) { $ScriptsPath = Join-Path $PSScriptRoot '../scripts' }
+    if ([string]::IsNullOrWhiteSpace($ScriptsPath)) { $ScriptsPath = Join-Path $PSScriptRoot '../../automation/scripts' }
     $loaded = @{}
     foreach ($file in Get-ChildItem -LiteralPath $ScriptsPath -Filter '*.ps1') {
         $loaded[$file.Name] = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8

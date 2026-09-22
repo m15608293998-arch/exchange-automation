@@ -1,4 +1,4 @@
-# Prepended to each operation by the playbook. Parameters are bound as data.
+# Prepended to each operation by the local Python bridge. Parameters are bound as data.
 param(
     [string] $LoginName,
     [string] $DisplayName,
