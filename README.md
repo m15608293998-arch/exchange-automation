@@ -1,14 +1,14 @@
 # Exchange 员工邮箱自动化
 
-Go 提供 HTTP API、校验、编排与审计；默认由本地 Python/PSRP **直接连接 Exchange `/PowerShell/` 受限端点**，不再先登录普通 Windows PowerShell，也不需要 Kerberos 委派。生产前提：**调用入职接口前 AD 用户不存在，由 New-Mailbox 同时创建 AD 用户和邮箱**。
+当前部署方案是在 Exchange 服务器本机运行 [Python Windows 服务](docs/windows-local-service.md)：Python 提供 HTTP API，本机 Windows PowerShell 5.1 连接本机 Exchange 端点，按专用 AD 服务账号的 RBAC 执行业务命令。生产前提：**调用入职接口前 AD 用户不存在，由 New-Mailbox 同时创建 AD 用户和邮箱**。仓库中原 Go/Linux 直连实现保留为历史部署路径。
 
-管理员可使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建普通 AD 服务账号及专用业务角色：**组织范围创建普通员工邮箱，维护所有普通静态通讯组的成员，不按员工 OU 或组名单授权**。管理员执行说明见 [一页交付指南](docs/admin-setup.md)；连接说明见 [生产直连交付说明](docs/production-direct.md)。旧 Ansible 双跳实现仅作为显式回退保留。
+管理员可使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建普通 AD 服务账号及专用业务角色：**组织范围创建普通员工邮箱，维护所有普通静态通讯组的成员，不按员工 OU 或组名单授权**。本机服务的安装、配置与离线交付见 [Windows 本机服务说明](docs/windows-local-service.md)。
 
 管理员直接运行初始化脚本，只需输入要新建的账号名和密码；成功返回 `账号@AD域`。脚本不再要求选择邮箱域、数据库或员工 OU，这些员工业务设置保留在应用部署配置中。
 
-搬到完全隔离内网、使用新的 Exchange 地址时，逐项修改位置见 [内网迁移配置清单](docs/intranet-migration.md)。不需要改业务源码，也不需要访问微软网站做测试。
+搬到完全隔离内网时，本机服务配置见 [Windows 配置模板](deployment/windows-local-config.json.example)；不需要改业务源码，也不需要访问微软网站做测试。原 Linux 方案的迁移清单仍在 [历史文档](docs/intranet-migration.md)。
 
-生产只读采集结果已经收到并完成适配，见 [生产环境记录](docs/production-environment-2026-09-20.md)。可使用 [BJWGBY 生产配置模板](deployment/bjwgby-production.env.example) 和 [Kerberos 模板](deployment/krb5.bjwgby.conf.example)；两者均不包含密码。
+生产只读采集结果已经收到并完成适配，见 [生产环境记录](docs/production-environment-2026-09-20.md)。本机服务使用 [Windows 配置模板](deployment/windows-local-config.json.example)；原 Linux 路径的 [环境模板](deployment/bjwgby-production.env.example) 和 [Kerberos 模板](deployment/krb5.bjwgby.conf.example) 保留供历史部署使用。
 
 ## 操作边界
 
@@ -129,7 +129,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 | 502 | 执行或结果协议错误 |
 | 504 | 操作超时/中断，结合 state_unknown 判断是否需要核实 |
 
-## 配置与生产部署
+## 原 Linux 方案：配置与生产部署
 
 程序不会自动读取 .env。生产配置见 [.env.example](.env.example)，由 systemd EnvironmentFile、容器 Secret 或进程环境注入；测试环境独立示例见 [deployment/test.env.example](deployment/test.env.example)。默认 APP_ENV=production。
 
@@ -164,7 +164,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 
 提供 [systemd 示例](deployment/exchange-automation.service)。部署前创建专用低权限 Linux 用户，安装到 /opt/exchange-automation，将权限为 0600 的配置放在 /etc/exchange-automation.env。Python 环境和凭据文件必须对该用户可读，不能依赖 /root 下的安装。示例通过 StateDirectory/RuntimeDirectory 创建 0700 目录；TimeoutStopSec 必须大于业务超时加 20 秒。
 
-## 连接检查与最小权限
+## 原 Linux 方案：连接检查与最小权限
 
 普通 AD 域服务账号只需 Exchange RemotePowerShellEnabled 及业务 RBAC，不要求普通 Microsoft.PowerShell 端点访问权、Windows 本地管理员、Domain Admin 或 RDP 权限。Exchange 自身使用的 WinRM 组件仍需正常运行；“不需要开放普通 WinRM 登录”不代表可以停用 Exchange 的底层组件。
 
@@ -182,7 +182,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 
 测试专用 automation/krb5.test.conf 不得用于生产。生产 Kerberos 使用内网 DNS/KDC、实际 realm/SPN 和正确的时间同步，不需要委派或 Linux 加域。既有 HTTPS 端点若支持且组织允许 NTLM，可以显式选择它；未做真实 NTLM 路径验收，不能假设端点支持。
 
-## 依赖与离线交付
+## 原 Linux 方案：依赖与离线交付
 
 控制端：Linux、Go 1.22+、Python 3.9；直连依赖 pypsrp 0.8.1、gssapi 1.12.0、krb5 0.10.0，见 requirements-direct.txt。默认不安装 Ansible 或 Windows collection。固定版本兼容当前环境，不代表旧运行时仍处于上游安全维护期；生产运行时升级需另做兼容验收。
 
@@ -212,7 +212,7 @@ python3 -m venv .venv
 
 若需要保留旧连接回退，再安装 requirements.txt 与 requirements.yml，并交付整个 automation 目录及固定 collection 离线包。旧方式使用 [独立配置模板](deployment/legacy-ansible.env.example)，仍需要原来的 Windows 端点权限和 Kerberos 委派；不会自动切换。
 
-## 安全机制与验证
+## 原 Linux 方案：安全机制与验证
 
 直连将参数作为 JSON 从 Go 的 stdin 管道交给独立 Python 进程，不生成请求临时文件，不在命令行中放密码，不经过 Jinja/PowerShell 字符串求值。New-Mailbox 密码通过 PSRP SecureString 传输；只使用 add_cmdlet/add_parameter，兼容 Exchange NoLanguage 端点。
 

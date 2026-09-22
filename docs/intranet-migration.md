@@ -1,6 +1,6 @@
 # 完全隔离内网：迁移时改哪些地方
 
-适用当前 `direct` 连接方式。**不用改 Go/Python 源码，也不用把测试服务器地址逐个替换进脚本。** Exchange 管理员在生产服务器重新运行建号脚本；应用维护方修改连接、业务和 Linux Kerberos 配置即可。
+本页适用原 Linux `direct` 连接方式。新的 Exchange 本机 Python 服务请使用 [Windows 本机服务部署说明](windows-local-service.md)。**不用改 Go/Python 源码，也不用把测试服务器地址逐个替换进脚本。** Exchange 管理员在生产服务器重新运行建号脚本；应用维护方修改连接、业务和 Linux Kerberos 配置即可。
 
 这里的内网指完全无法访问互联网。管理员脚本不下载组件、不向微软网站发请求；应用依赖提前准备本地离线包，见 [离线交付步骤](../README.md#依赖与离线交付)。不要把测试机的临时 Python 目录当作生产安装包。
 

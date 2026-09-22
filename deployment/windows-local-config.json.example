@@ -1,0 +1,15 @@
+{
+  "project_directory": "C:\\ExchangeAutomation",
+  "http_address": "0.0.0.0:18082",
+  "api_token": "",
+  "mail_domain": "bjwgby.com",
+  "upn_suffix": "bjwgby.com",
+  "mailbox_database": "Mailbox Database 1119980504",
+  "domain_controller": "EXCHANGE.BJWGBY.COM",
+  "organizational_unit": "",
+  "state_directory": "C:\\ProgramData\\ExchangeAutomation\\state",
+  "reset_password_on_next_logon": false,
+  "bypass_group_manager_check": true,
+  "operation_timeout_seconds": 300,
+  "max_concurrent_operations": 2
+}

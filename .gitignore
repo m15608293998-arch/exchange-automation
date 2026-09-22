@@ -9,6 +9,8 @@ automation/inventory/hosts.local.yml
 /coverage.out
 /.venv/
 /wheelhouse/
+__pycache__/
+*.pyc
 /collections/
 /exchange服务器信息/
 *.log

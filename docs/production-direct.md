@@ -1,5 +1,7 @@
 # 生产直连交付：管理员最少需要做什么
 
+本页适用原 Linux 控制端。新的 Exchange 本机 Python 服务请看 [本机服务说明](windows-local-service.md)。
+
 本项目默认连接 `http(s)://Exchange服务器FQDN/PowerShell/` 的 `Microsoft.Exchange` 端点。
 Linux 上编排业务，PSRP 只提交固定命令和类型化参数，不在 Windows 上运行通用脚本。
 

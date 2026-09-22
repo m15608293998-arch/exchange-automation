@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exchange-automation-local"
+version = "0.1.0"
+description = "Exchange-local Python HTTP service"
+requires-python = ">=3.9"
+dependencies = ["pywin32==312; sys_platform == 'win32'"]
+
+[tool.setuptools]
+packages = ["exchange_local"]
