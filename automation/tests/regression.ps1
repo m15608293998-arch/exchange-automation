@@ -16,6 +16,7 @@ $script:MockMailbox = [pscustomobject]@{
     SamAccountName = 'slpeng'; UserPrincipalName = 'slpeng@example.com'
     DisplayName = 'Test {{ 7 * 7 }}'; PrimarySmtpAddress = 'slpeng@example.com'
     RecipientTypeDetails = 'UserMailbox'
+    DistinguishedName = "CN=Test O'Brien,CN=Users,DC=example,DC=com"
 }
 $script:MockGroup = [pscustomobject]@{
     Guid = '22222222-2222-2222-2222-222222222222'
@@ -36,7 +37,11 @@ function Get-Mailbox {
 function Get-Recipient { [CmdletBinding()] param($Identity) }
 function Get-User { [CmdletBinding()] param($Identity, $DomainController) }
 function Get-DistributionGroup {
-    [CmdletBinding()] param($Identity, $DomainController, $ResultSize, $RecipientTypeDetails)
+    [CmdletBinding()] param($Identity, $DomainController, $ResultSize, $RecipientTypeDetails, $Filter)
+    if ($Filter) {
+        if ($Filter -cne "Members -eq 'CN=Test O''Brien,CN=Users,DC=example,DC=com'") { throw 'Unsafe membership filter' }
+        if (-not $script:Member) { return }
+    }
     if ($script:Scenario -eq 'denied') { throw [System.UnauthorizedAccessException]::new('do not suppress this error') }
     if ($script:Scenario -eq 'missing-group') {
         $record = New-Object System.Management.Automation.ErrorRecord ([System.Exception]::new('not found')), 'ManagementObjectNotFoundException', 'ObjectNotFound', $Identity
@@ -99,6 +104,13 @@ $script:MockMailbox.UserPrincipalName = 'slpeng@another.example'
 $result = Invoke-Scenario 'discover_user_groups.ps1' 'normal' $identity
 Assert-Test 'reject wrong UPN' (-not $result.ok -and $result.code -eq 'RECIPIENT_CONFLICT')
 $script:MockMailbox.UserPrincipalName = 'slpeng@example.com'
+
+$script:Member = $true
+$result = Invoke-Scenario 'discover_user_groups.ps1' 'normal' $identity
+Assert-Test 'server-side membership filter escapes apostrophes in DN' ($result.ok -and $result.data.groups.Count -eq 1)
+$script:Member = $false
+$result = Invoke-Scenario 'discover_user_groups.ps1' 'normal' $identity
+Assert-Test 'server-side membership filter returns no unrelated groups' ($result.ok -and $result.data.groups.Count -eq 0)
 
 $result = Invoke-Scenario 'discover_user_groups.ps1' 'missing-user' $identity
 Assert-Test 'classify explicit not found' (-not $result.ok -and $result.code -eq 'USER_NOT_FOUND')

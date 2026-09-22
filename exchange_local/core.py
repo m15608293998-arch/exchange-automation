@@ -6,7 +6,9 @@ import re
 import subprocess
 import threading
 import time
+import tempfile
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -16,6 +18,7 @@ GUID = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 OPERATIONS = {"resolve_groups", "ensure_mailbox", "ensure_group_member", "discover_user_groups", "remove_group_member"}
 MUTATIONS = {"ensure_mailbox", "ensure_group_member", "remove_group_member"}
 STATUS = {
+    "UNAUTHORIZED": 401, "UNSUPPORTED_MEDIA_TYPE": 415, "SERVICE_STOPPING": 503, "INTERNAL_ERROR": 500,
     "INVALID_REQUEST": 400, "USER_NOT_FOUND": 404,
     "RECIPIENT_CONFLICT": 409, "OPERATION_BUSY": 409,
     "OPERATION_STATE_UNKNOWN": 409, "GROUP_NOT_FOUND": 422,
@@ -25,11 +28,12 @@ STATUS = {
 
 
 class OperationError(Exception):
-    def __init__(self, code, message, *, step="", target="", state_unknown=False, timeout=False):
+    def __init__(self, code, message, *, step="", target="", state_unknown=False, timeout=False, error_type=""):
         super().__init__(message)
         self.code, self.message = code, message
         self.step, self.target = step, target
         self.state_unknown, self.timeout = state_unknown, timeout
+        self.error_type = error_type
 
     def detail(self):
         result = {"code": self.code, "message": self.message, "state_unknown": self.state_unknown}
@@ -45,7 +49,7 @@ def invalid(message):
 
 
 def has_control(value):
-    return any(unicodedata.category(char) == "Cc" for char in value)
+    return any(unicodedata.category(char) in {"Cc", "Cs"} for char in value)
 
 
 def login_name(value):
@@ -68,7 +72,7 @@ def normalize_onboard(value):
     if len(display) > 256 or has_control(display):
         raise invalid("display_name must be at most 256 characters and contain no control characters")
     password = value.get("initial_password", "")
-    if not isinstance(password, str) or len(password.encode("utf-8")) > 1024 or "\0" in password:
+    if not isinstance(password, str) or any(unicodedata.category(c) == "Cs" for c in password) or len(password.encode("utf-8")) > 1024 or "\0" in password:
         raise invalid("initial_password is invalid")
     groups = value.get("groups", [])
     if not isinstance(groups, list) or len(groups) > 100:
@@ -78,7 +82,7 @@ def normalize_onboard(value):
         if not isinstance(group, str):
             raise invalid("each groups entry must be a string")
         group = group.strip()
-        if not group or len(group.encode("utf-8")) > 512 or has_control(group):
+        if not group or has_control(group) or len(group.encode("utf-8")) > 512:
             raise invalid("each groups entry must be non-empty, at most 512 bytes, and contain no control characters")
         if group.casefold() not in seen:
             normalized.append(group)
@@ -122,21 +126,49 @@ class PowerShellRunner:
         if not self.script.is_file():
             raise ValueError("local Exchange PowerShell bridge is missing")
 
+    def _invoke(self, request, seconds):
+        # Spool output to temporary files, not unbounded RAM. Check output size and
+        # elapsed time while the process runs; neither stderr nor stdin is logged.
+        deadline = time.monotonic() + max(1, seconds)
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            with subprocess.Popen(
+                [self.executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.script)],
+                stdin=subprocess.PIPE, stdout=output, stderr=errors,
+            ) as process:
+                first = True
+                try:
+                    while True:
+                        if any(os.fstat(stream.fileno()).st_size > 1024 * 1024 for stream in (output, errors)):
+                            raise OSError("PowerShell output exceeded limit")
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(process.args, seconds)
+                        try:
+                            process.communicate(input=request if first else None, timeout=min(0.2, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            first = False
+                except BaseException:
+                    process.kill()
+                    process.communicate()
+                    raise
+                if any(os.fstat(stream.fileno()).st_size > 1024 * 1024 for stream in (output, errors)):
+                    raise OSError("PowerShell output exceeded limit")
+                output.seek(0)
+                return subprocess.CompletedProcess(process.args, process.returncode, output.read(1024 * 1024 + 1))
+
     def execute(self, operation, parameters, seconds):
         if operation not in OPERATIONS:
             raise ValueError("unsupported Exchange operation")
         request = json.dumps({"operation": operation, "parameters": parameters}, ensure_ascii=False).encode("utf-8")
         try:
-            process = subprocess.run(
-                [self.executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.script)],
-                input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=max(1, seconds), check=False,
-            )
+            process = self._invoke(request, seconds)
         except subprocess.TimeoutExpired:
             raise OperationError("AUTOMATION_UNAVAILABLE", "Exchange operation timed out; reconcile the outcome before retrying",
                                  step=operation, state_unknown=operation in MUTATIONS, timeout=True) from None
         except OSError:
-            raise OperationError("AUTOMATION_UNAVAILABLE", "Cannot start local PowerShell", step=operation,
-                                 state_unknown=False) from None
+            raise OperationError("AUTOMATION_UNAVAILABLE", "Local PowerShell I/O failed; reconcile any uncertain changes", step=operation,
+                                 state_unknown=operation in MUTATIONS) from None
         if process.returncode != 0 or len(process.stdout) > 1024 * 1024:
             raise OperationError("AUTOMATION_UNAVAILABLE", "Local PowerShell failed; reconcile any uncertain changes",
                                  step=operation, state_unknown=operation in MUTATIONS)
@@ -154,7 +186,13 @@ class PowerShellRunner:
             message = result.get("message")
             if not isinstance(message, str) or len(message) > 300:
                 message = "Exchange command failed; inspect server diagnostics"
-            raise OperationError(code, message, step=operation, state_unknown=result.get("state_unknown") is True)
+            unknown = result.get("state_unknown")
+            error_type = result.get("error_type", "")
+            if not isinstance(error_type, str) or not re.fullmatch(r"[A-Za-z0-9_.]{0,150}", error_type):
+                error_type = ""
+            raise OperationError(code, message, step=operation,
+                                 state_unknown=unknown if type(unknown) is bool else operation in MUTATIONS,
+                                 error_type=error_type)
         if not isinstance(result.get("data"), dict):
             raise OperationError("AUTOMATION_UNAVAILABLE", "Exchange returned an invalid result",
                                  step=operation, state_unknown=operation in MUTATIONS)
@@ -185,22 +223,33 @@ class ExchangeService:
         self.lock = threading.Lock()
         self.active = set()
         self.uncertain = set()
+        self.stopping = False
+
+    def begin_stop(self):
+        with self.lock:
+            self.stopping = True
 
     def _pending(self, login):
-        return self.state / (login + ".pending")
+        # Prefix avoids Windows device names such as CON.pending / NUL.pending.
+        return self.state / ("account-" + login + ".pending")
 
     def _acquire(self, login):
         with self.lock:
+            if self.stopping:
+                raise OperationError("SERVICE_STOPPING", "Service is stopping; retry later")
             if login in self.active:
                 raise OperationError("OPERATION_BUSY", "Another operation is running for this user")
-            if login in self.uncertain or self._pending(login).exists():
+            if login in self.uncertain or self._pending(login).exists() or (self.state / (login + ".pending")).is_file():
                 self.uncertain.add(login)
                 raise OperationError("OPERATION_STATE_UNKNOWN", "An unfinished operation is recorded; reconcile before retrying", state_unknown=True)
             if len(self.active) >= self.config.get("max_concurrent_operations", 2):
                 raise OperationError("CAPACITY_EXCEEDED", "Operation capacity reached; retry later")
             try:
                 fd = os.open(str(self._pending(login)), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.close(fd)
+                with os.fdopen(fd, "w", encoding="utf-8") as journal:
+                    json.dump({"login": login, "started_at": datetime.now(timezone.utc).isoformat()}, journal)
+                    journal.flush()
+                    os.fsync(journal.fileno())
             except FileExistsError:
                 self.uncertain.add(login)
                 raise OperationError("OPERATION_STATE_UNKNOWN", "An unfinished operation is recorded; reconcile before retrying", state_unknown=True) from None

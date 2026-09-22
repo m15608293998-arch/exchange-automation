@@ -42,7 +42,7 @@ function Get-ApplicationRoleSpecifications {
                 'Get-Mailbox' = @('Identity', 'DomainController')
                 'Get-Recipient' = @('Identity')
                 'Get-User' = @('Identity', 'DomainController')
-                'Get-DistributionGroup' = @('Identity', 'RecipientTypeDetails', 'ResultSize', 'DomainController')
+                'Get-DistributionGroup' = @('Identity', 'Filter', 'RecipientTypeDetails', 'ResultSize', 'DomainController')
                 'Get-DistributionGroupMember' = @('Identity', 'ResultSize', 'DomainController')
             }
         }

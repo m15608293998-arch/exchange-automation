@@ -44,7 +44,7 @@ Linux 上编排业务，PSRP 只提交固定命令和类型化参数，不在 Wi
 | Get-Recipient | Identity；DomainController 仅在该角色暴露时使用 |
 | Get-User | Identity、DomainController |
 | New-Mailbox | Name、FirstName、Alias、SamAccountName、DisplayName、UserPrincipalName、PrimarySmtpAddress、Password、ResetPasswordOnNextLogon、OrganizationalUnit、Database、DomainController |
-| Get-DistributionGroup | Identity、RecipientTypeDetails、ResultSize、DomainController |
+| Get-DistributionGroup | Identity、Filter、RecipientTypeDetails、ResultSize、DomainController |
 | Get-DistributionGroupMember | Identity、ResultSize、DomainController |
 | Add-DistributionGroupMember | Identity、Member、DomainController；启用绕过组主管检查时还需 BypassSecurityGroupManagerCheck |
 | Remove-DistributionGroupMember | Identity、Member、Confirm、DomainController；启用绕过组主管检查时还需 BypassSecurityGroupManagerCheck |

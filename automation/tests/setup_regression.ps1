@@ -150,12 +150,14 @@ Assert-Test 'handoff is explicitly connection-only' ($SourceText -match 'connect
 
 # Relevant parameter subsets transcribed from the production CU6 screenshots,
 # not a complete export of the parent roles and not evidence of write access.
+# Filter is additionally required for server-side membership lookup (documented
+# Get-DistributionGroup parameter); the initializer checks the real parent role.
 $productionCU6 = @{
     ViewOnlyRecipients = @{
         'Get-Mailbox' = @('Identity', 'DomainController')
         'Get-Recipient' = @('Identity', 'DomainController', 'ReadFromDomainController', 'ResultSize')
         'Get-User' = @('Identity', 'DomainController')
-        'Get-DistributionGroup' = @('Identity', 'RecipientTypeDetails', 'ResultSize', 'DomainController')
+        'Get-DistributionGroup' = @('Identity', 'Filter', 'RecipientTypeDetails', 'ResultSize', 'DomainController')
         'Get-DistributionGroupMember' = @('Identity', 'ResultSize', 'DomainController')
     }
     MailRecipientCreation = @{

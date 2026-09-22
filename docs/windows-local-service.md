@@ -1,62 +1,71 @@
-# Exchange 本机 Python 服务部署
+# Exchange 本机 Python 服务
 
-本方案把 HTTP 服务安装在 Exchange 服务器上。Python 服务以专用 AD 账号运行，启动本机 Windows PowerShell 5.1，PowerShell 连接**本机** `Microsoft.Exchange` 端点并受该账号的 Exchange RBAC 限制。业务调用方只访问 Python HTTP 接口。服务器自身使用的 WinRM/Exchange PowerShell 组件保持正常运行。
+Python API 与 Exchange 部署在同一台服务器；本机 Windows PowerShell 5.1 使用 Windows 服务身份连接本机 Exchange 端点。业务调用方只访问 HTTP API，不远程登录 Exchange。
 
-现有管理员建号脚本 [Initialize-ExchangeAutomation.ps1](../deployment/Initialize-ExchangeAutomation.ps1) 仍用于创建服务账号和业务 RBAC；它的 `RemotePowerShellEnabled` 是本机标准 Exchange 会话所需。服务账号不需要邮箱、本地管理员或远程桌面权限。另需允许此账号“作为服务登录”，以便 Windows 服务管理器启动它。
+## 1. 手动准备环境
 
-## 1. 离线准备
+本项目不提供环境一键安装器，也不会自动下载 Python、安装依赖、修改系统权限或防火墙。部署人员手动准备：
 
-在可联网的 **Windows x64 构建机**准备与内网相同版本的 64 位 Python 安装包和 wheel。建议 Python 3.11。把本仓库复制到内网 Exchange 的固定目录，例如 `C:\ExchangeAutomation`，不要放在服务账号可修改的位置。
+- Windows PowerShell 5.1、64 位全机 Python（本次测试使用 3.13.15）。
+- 同一个 Python 中安装 `pywin32==312`、`waitress==3.0.2`、本项目 `exchange-automation-local==0.2.0`。
+- 仓库位于固定目录，例如 `C:\ExchangeAutomation`；Python 不要安装在管理员的个人用户目录。
+- 使用管理员 [建号脚本](../deployment/Initialize-ExchangeAutomation.ps1) 创建的专用 AD 服务账号，手动赋予“作为服务登录”。不需要该账号有邮箱、管理员或远程桌面权限。若域策略存在“拒绝作为服务登录”，交由管理员处理，程序不会覆盖域策略。
+- 代码、Python 安装目录、配置文件：管理员/SYSTEM 可写，服务账号只读和执行；普通用户不能修改。状态目录：仅管理员/SYSTEM 和服务账号可写。
 
-在外网构建机先准备新版 `pip`、`setuptools`、`wheel`，然后在仓库根目录生成应用 wheel，并下载对应 Python 版本的 pywin32 wheel：
+内网完全离线，事先带入安装包和匹配 Python/Windows x64 的 wheel。下列是手动准备命令参考，不是业务服务的安装逻辑。
+
+在可联网的 Windows x64 构建机、仓库根目录：
 
 ```powershell
-py -3.11 -m pip install --upgrade pip setuptools wheel
-py -3.11 -m pip wheel --no-deps --no-build-isolation --wheel-dir wheelhouse .
-py -3.11 -m pip download --only-binary=:all: --dest wheelhouse pywin32==312
+py -3.13 -m pip install --upgrade pip setuptools wheel
+py -3.13 -m pip wheel --no-deps --no-build-isolation --wheel-dir wheelhouse .
+py -3.13 -m pip download --only-binary=:all: --dest wheelhouse pywin32==312 waitress==3.0.2
 ```
 
-把 `wheelhouse`、仓库代码和 Python 安装包一同交付内网。内网只使用本地 wheel，不访问包索引：
+内网管理员手动安装 Python 后，从本地 wheel 安装依赖和应用：
 
 ```powershell
-py -3.11 -m pip --isolated --disable-pip-version-check install --no-index --find-links=C:\ExchangeAutomation\wheelhouse exchange-automation-local==0.1.0 pywin32==312
+py -3.13 -m pip --isolated --disable-pip-version-check install --no-index --find-links=C:\ExchangeAutomation\wheelhouse exchange-automation-local==0.2.0
 ```
 
-如果内网 Python 不支持 `py -3.11`，把命令中的 `py -3.11` 换成该 Python 的绝对路径。pywin32 及本项目必须安装到**同一个** 64 位 Python；Windows 服务使用其 `PythonService.exe`。wheel 必须与 Python 版本、Windows 架构匹配。
+如果未安装 Python 启动器，把 `py -3.13` 换成 Python 的绝对路径，例如 `& 'C:\Program Files\ExchangeAutomationPython\python.exe'`。服务使用同一解释器的 `PythonService.exe`。
 
-## 2. 配置
+## 2. 业务配置
 
-管理员在生产 Exchange 上运行建号脚本，获取 `AD域\账号` 或 `账号@AD域` 和密码。服务安装时使用 `AD域\账号`；密码只在安装提示中输入，不写入配置文件或命令行。把 [Windows 配置模板](../deployment/windows-local-config.json.example) 复制为 `C:\ProgramData\ExchangeAutomation\config.json`。模板已按收到的生产信息填入员工邮箱后缀、域控和数据库；检查 `project_directory`、`http_address`、`state_directory` 与实际部署一致。`project_directory` 指向含 `automation\scripts` 的仓库目录。监听端口示例为 18082，按本机实际空闲端口调整。
+将 [配置模板](../deployment/windows-local-config.json.example) 复制为 `C:\ProgramData\ExchangeAutomation\config.json`。模板中的生产值为：
+
+| 配置 | 生产值/说明 |
+|---|---|
+| `mail_domain`、`upn_suffix` | `bjwgby.com`，新员工邮箱/登录后缀，不是服务账号邮箱 |
+| `mailbox_database` | `Mailbox Database 1119980504`，无运行时选择提示 |
+| `domain_controller` | `EXCHANGE.BJWGBY.COM` |
+| `project_directory` | 实际仓库目录，需要包含 `automation\local` 和 `automation\scripts` |
+| `state_directory` | 持久状态和日志目录，示例 `C:\ProgramData\ExchangeAutomation\state` |
+| `http_address` | 示例 `0.0.0.0:18082`，按实际空闲端口修改 |
+
+测试环境使用其自己的数据库和域控，不要把测试配置覆盖进生产模板。本机 Exchange 地址由本机 FQDN 获取，不再配置远程 Exchange 地址或 AD 密码。
+
+`api_token` 保持为空，Postman 使用 No Auth。生产请求鉴权交由接入层对接 Keycloak；接入时应确保业务请求经过该层。本服务不会自动新增 JWT/Bearer 要求，也不会调整 WinRM 或防火墙。只有部署人员主动配置 `api_token` 时，已有的可选 Bearer 校验才启用。
+
+## 3. 注册和运行服务
+
+完成上述手动环境准备后，在管理员 PowerShell 执行：
 
 ```powershell
-New-Item -ItemType Directory -Path 'C:\ProgramData\ExchangeAutomation' -Force | Out-Null
-Copy-Item 'C:\ExchangeAutomation\deployment\windows-local-config.json.example' 'C:\ProgramData\ExchangeAutomation\config.json'
-notepad 'C:\ProgramData\ExchangeAutomation\config.json'
-```
-
-`api_token` 留空时，Postman 使用 No Auth，和当前服务一致。若以后主动填入至少 32 字节的 Token，接口才要求 Bearer。配置文件不能存服务账号密码。员工请求的 `groups` 可直接使用唯一的 `app`、`dev` 之类短名称，不需要拼邮箱域。
-
-状态目录必须长期保留，服务账号需要读写权限。新建目录后由管理员给该账号“修改”权限，保留 SYSTEM 和 Administrators 的完全控制，并检查其他普通用户不能改动其中的 `.pending` 文件。安装后不要随意清空目录；它用于识别结果不确定的操作。
-
-## 3. 安装和启动
-
-在**管理员权限**的 Windows PowerShell 中执行：
-
-```powershell
-py -3.11 -m exchange_local.install_service
+py -3.13 -m exchange_local.install_service
 Start-Service ExchangeAutomation
 Get-Service ExchangeAutomation
 ```
 
-安装器仅询问服务账号 `AD域\账号` 和密码，通过 Windows 服务管理器保存服务登录凭据；不会把密码放到命令行。管理员需要确保该账号具有“作为服务登录”权限。如果 `Start-Service` 报登录失败，先检查该权限及密码。服务日志在 `state_directory\service.log`，不记录请求体或密码。
+注册入口只询问 `AD域\账号` 或 `账号@AD域`、密码，注册 Windows 服务；不负责安装环境或授权。密码由 Windows SCM 保管，不写入配置、日志或命令行。服务以该受限 AD 账号运行，业务权限仍由 Exchange RBAC 控制。
 
-服务运行期间，Python 用固定的本地 `powershell.exe -File` 执行 [桥接脚本](../automation/local/Invoke-ExchangeOperation.ps1)。业务参数从标准输入传入；桥接脚本只允许五个固定操作，并调用已有的 Exchange 业务脚本。服务本身不调用其他机器上的 PowerShell。
+HTTP 使用固定线程数的 Waitress；默认最多同时运行 2 个员工操作，同一员工并发返回 409。停止服务先拒绝新业务，再等待正在执行的操作完成（受 `operation_timeout_seconds` 限制），最后释放单实例锁。管理员升级前先 `Stop-Service`，确认已停止，再更新应用 wheel 和 PowerShell 脚本。
 
-## 4. 验收
+离职查询需要 `Get-DistributionGroup -Filter` 只读参数。新版建号脚本会检查它。原脚本创建的查询角色保留父角色参数，通常已具备；若人为裁剪过角色，需管理员检查并仅补上此查询参数，不扩大写权限。
 
-先在 Exchange 本机执行 `Invoke-WebRequest http://127.0.0.1:18082/healthz`，确认服务运行。`/healthz` 只表示 HTTP 进程存活。然后用 Postman 对事先不存在的隔离测试员工调用入职接口，验证 AD 账号、邮箱和指定普通通讯组；再调用离职接口验证直接成员移除。重复调用入职、离职，检查幂等结果。生产验收应使用真实生产服务账号和经过批准的测试对象。
+## 4. 验收和结果核查
 
-接口保持：
+`GET /healthz` 只检查 HTTP 进程存活，不表示 Exchange 权限验证已通过。业务验收应选取事先不存在的隔离员工：
 
 ```http
 POST /api/exchange/users
@@ -69,12 +78,14 @@ Content-Type: application/json
 POST /api/exchange/users/testemployee/offboard
 ```
 
-第二个接口不带请求体，只清理通讯组直接成员关系，不禁用账号或删除邮箱。若响应 `state_unknown=true`，先根据日志和 Exchange 实际状态核实，再处理 `state_directory` 中对应账号的 `.pending` 文件。
+离职不带请求体，只移除普通通讯组直接成员关系，不禁用账号、不删除邮箱。组名支持唯一短名称，不要求拼接邮件后缀。重复调用应保持幂等。
 
-本地开发机没有 Exchange/Windows 服务环境时，只能运行模拟回归，不能把模拟结果当作生产实机验收：
+日志位于 `state_directory\service.log`，包含时间、请求 ID、动作、账号、结果/已完成部分及错误类型，不记录密码和完整请求体。每次操作前刷盘 `account-<login>.pending`；超时且写入结果未知时保留此文件并阻止盲目重试，也识别旧版 `<login>.pending`。根据日志和 Exchange 实际状态核查，停止服务后单独移走已核实的记录留作审计，再启动重试。不要清空整个状态目录。强制杀进程/系统断电不等同于正常停止，必须按此流程核查。
+
+本地模拟回归：
 
 ```powershell
-py -3.11 -m unittest discover -s exchange_local\tests -v
+py -3.13 -m unittest discover -s exchange_local\tests -v
 ```
 
-目前测试 Exchange 的 Windows PowerShell 5.1 已通过桥接脚本语法和模拟参数绑定测试；该服务器尚无 Python，因此 Windows 服务的安装、启动和真实业务写入仍须在已备好离线 Python 的测试环境验收。
+模拟测试不代替真实 Exchange 验证，更不能保证所有生产域策略、ACL、独占范围都兼容；上线前仍应用生产服务账号做隔离验收。

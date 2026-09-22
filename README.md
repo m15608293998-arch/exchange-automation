@@ -67,7 +67,7 @@ POST /api/exchange/users/slpeng/offboard
 
 ## 运行与恢复
 
-每次业务操作开始前，服务在配置的 `state_directory` 创建 `<login_name>.pending` 文件。操作结果不确定或进程中断时保留该文件，后续对同一员工的请求返回 `OPERATION_STATE_UNKNOWN`。
+每次业务操作开始前，服务在配置的 `state_directory` 创建并刷盘 `account-<login_name>.pending` 文件（也识别旧版 `<login_name>.pending`）。操作结果不确定或进程中断时保留该文件，后续对同一员工的请求返回 `OPERATION_STATE_UNKNOWN`。正常停服会等待正在执行的业务结束。
 
 恢复时根据响应中的 `request_id`、服务日志和 Exchange 实际状态核实操作结果。停止服务后，单独移走已经核实的 `.pending` 文件并留作审计，再启动服务重试。不要批量清空状态目录。
 
@@ -82,6 +82,7 @@ POST /api/exchange/users/slpeng/offboard
 | 409 | 身份冲突、同员工操作中或存在待核查状态 |
 | 422 | 通讯组不存在或类型不允许 |
 | 429 | 并发容量已满 |
+| 503 | 服务正在停止，不接受新业务 |
 | 502 / 504 | PowerShell 执行失败或超时；结合 `state_unknown` 判断是否需要核查 |
 
 `GET /healthz` 只表示 Python HTTP 进程存活，不证明 Exchange 会话、数据库和 RBAC 写权限正常。
@@ -91,7 +92,7 @@ POST /api/exchange/users/slpeng/offboard
 Python 回归：
 
 ```powershell
-py -3.11 -m unittest discover -s exchange_local\tests -v
+py -3.13 -m unittest discover -s exchange_local\tests -v
 ```
 
 PowerShell 5.1 桥接回归：
@@ -100,4 +101,4 @@ PowerShell 5.1 桥接回归：
 .\automation\tests\local_bridge_regression.ps1
 ```
 
-生产前还必须在安装了 Python 的测试 Exchange 上，以真实受限服务账号完成 Windows 服务启动、隔离员工邮箱创建、加入通讯组和移出通讯组验收。
+已在测试 Exchange 上以真实受限服务账号验证 Windows 服务运行、员工创建、加组/退组、幂等及执行中停服，见 [本机服务验收报告](docs/verification-local-2026-09-22.md)。生产上线前仍需用生产服务账号做隔离验收。
