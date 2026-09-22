@@ -457,7 +457,7 @@ def main():
     except Exception:
         result = {"ok": False, "code": "INVALID_REQUEST", "message": MESSAGES["INVALID_REQUEST"], "state_unknown": False}
     print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
-    # Go expects a structured business failure with successful worker exit.
+    # The legacy caller expects a structured business failure with successful worker exit.
     return 1 if sys.argv[1:] == ["--check"] and not result["ok"] else 0
 
 

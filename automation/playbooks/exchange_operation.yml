@@ -45,6 +45,6 @@
       register: exchange_command
       no_log: true
 
-    - name: Return the structured result to the Go service
+    - name: Return the structured result to the legacy controller
       ansible.builtin.debug:
         msg: "EXCHANGE_AUTOMATION_RESULT_B64={{ (exchange_command.output | join('')) | b64encode }}"
