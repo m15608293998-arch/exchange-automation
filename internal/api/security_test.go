@@ -37,6 +37,26 @@ func TestAuthenticationProtectsOperationsButAllowsHealth(t *testing.T) {
 	}
 }
 
+func TestNoTokenAllowsBothOperationsWithoutAuthorization(t *testing.T) {
+	service := &fakeService{}
+	handler, err := NewHandler(service, log.New(io.Discard, "", 0), time.Second, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "/api/exchange/users", strings.NewReader(`{"login_name":"alice","display_name":"Alice"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != 200 || service.onboardInput.LoginName != "alice" {
+		t.Fatalf("unauthenticated onboard failed: %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", "/api/exchange/users/alice/offboard", nil))
+	if response.Code != 200 || service.offboardLogin != "alice" {
+		t.Fatalf("unauthenticated offboard failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestUncertainTimeoutIncludesConfirmedPartialProgress(t *testing.T) {
 	service := &fakeService{
 		onboardResult: exchange.OnboardResult{LoginName: "alice", MailboxID: "confirmed-guid", AddedGroups: []string{"done"}},

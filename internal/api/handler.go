@@ -27,10 +27,11 @@ type exchangeService interface {
 }
 
 type Handler struct {
-	service   exchangeService
-	logger    *log.Logger
-	timeout   time.Duration
-	tokenHash [32]byte
+	service     exchangeService
+	logger      *log.Logger
+	timeout     time.Duration
+	tokenHash   [32]byte
+	requireAuth bool
 }
 
 type errorResponse struct {
@@ -58,10 +59,10 @@ func NewHandler(service exchangeService, logger *log.Logger, timeout time.Durati
 		return nil, fmt.Errorf("operation timeout must be greater than zero")
 	}
 
-	if len(token) < 32 {
+	if token != "" && (len(token) < 32 || strings.TrimSpace(token) == "") {
 		return nil, fmt.Errorf("API token must contain at least 32 bytes")
 	}
-	handler := &Handler{service: service, logger: logger, timeout: timeout, tokenHash: sha256.Sum256([]byte(token))}
+	handler := &Handler{service: service, logger: logger, timeout: timeout, tokenHash: sha256.Sum256([]byte(token)), requireAuth: token != ""}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /api/exchange/users", handler.onboard)
@@ -215,7 +216,7 @@ func (h *Handler) logRequests(next http.Handler) http.Handler {
 		defer func() {
 			h.logger.Printf("http_request request_id=%s method=%s path=%q status=%d duration=%s", response.Header().Get("X-Request-ID"), request.Method, request.URL.Path, tracked.status, time.Since(started).Round(time.Millisecond))
 		}()
-		if request.URL.Path != "/healthz" {
+		if h.requireAuth && request.URL.Path != "/healthz" {
 			authorization := request.Header.Get("Authorization")
 			token := strings.TrimPrefix(authorization, "Bearer ")
 			hash := sha256.Sum256([]byte(token))

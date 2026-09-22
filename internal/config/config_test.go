@@ -65,7 +65,7 @@ func TestProductionRequiresDatabaseDCAndDurableStateButNotOU(t *testing.T) {
 	}
 }
 func TestConnectionConfigurationFailsClosed(t *testing.T) {
-	for _, key := range []string{"EXCHANGE_HOST", "EXCHANGE_SERVER_FQDN", "EXCHANGE_WINRM_USER", "EXCHANGE_WINRM_PASSWORD", "API_TOKEN"} {
+	for _, key := range []string{"EXCHANGE_HOST", "EXCHANGE_SERVER_FQDN", "EXCHANGE_WINRM_USER", "EXCHANGE_WINRM_PASSWORD"} {
 		t.Run(key, func(t *testing.T) {
 			testEnvironment(t)
 			t.Setenv(key, "")
@@ -88,4 +88,18 @@ func TestConnectionConfigurationFailsClosed(t *testing.T) {
 			t.Fatal("unsupported auth accepted")
 		}
 	})
+}
+
+func TestAPITokenIsOptionalButInvalidConfiguredTokenFails(t *testing.T) {
+	testEnvironment(t)
+	t.Setenv("API_TOKEN", "")
+	if cfg, err := Load(); err != nil || cfg.APIToken != "" {
+		t.Fatalf("empty token should allow unauthenticated API: %v", err)
+	}
+	for _, token := range []string{"short", "                                ", "replace-with-at-least-32-random-bytes"} {
+		t.Setenv("API_TOKEN", token)
+		if _, err := Load(); err == nil {
+			t.Fatal("invalid configured token accepted")
+		}
+	}
 }

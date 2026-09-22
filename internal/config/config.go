@@ -53,7 +53,7 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
-	required := []string{"EXCHANGE_MAIL_DOMAIN", "API_TOKEN"}
+	required := []string{"EXCHANGE_MAIL_DOMAIN"}
 	if mode == "ansible" {
 		required = append(required, "EXCHANGE_HOST", "EXCHANGE_SERVER_FQDN", "EXCHANGE_WINRM_USER", "EXCHANGE_WINRM_PASSWORD")
 	}
@@ -72,8 +72,8 @@ func Load() (Config, error) {
 		}
 	}
 	token := os.Getenv("API_TOKEN")
-	if len(token) < 32 {
-		return Config{}, fmt.Errorf("API_TOKEN must contain at least 32 bytes")
+	if token != "" && (len(token) < 32 || strings.TrimSpace(token) == "" || strings.Contains(token, "replace-with-")) {
+		return Config{}, fmt.Errorf("API_TOKEN, when configured, must be a non-placeholder value of at least 32 bytes")
 	}
 	if mode == "ansible" {
 		if err := validateLegacyConnection(environment); err != nil {

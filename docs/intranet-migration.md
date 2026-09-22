@@ -110,4 +110,4 @@ env -u EXCHANGE_USERNAME -u EXCHANGE_PASSWORD \
 
 接口路径和 JSON 字段不因 Exchange 地址变化而改变，Postman 的主机/端口改为业务 Linux 机器的地址。组参数可以继续用内网实际唯一的 `app`、`dev` 等短名称，不必拼测试邮箱后缀。
 
-本次只调整建号脚本和交付说明，没有启动 HTTP 服务或改动接口认证。**现有 Go 启动配置仍要求 `API_TOKEN`；用户此前对此提出异议，这项未决问题不属于已经完成的连接迁移。** 不应把这份连接清单当作“已取消鉴权、可以直接启动”的承诺，接口认证应单独按用户确认的要求处理。
+2026-09-22 已按用户要求取消强制 API Token：`API_TOKEN` 留空即可启动，Postman 使用 No Auth。只有主动配置非空且至少 32 字节的 Token 才启用 Bearer 校验；已有非空 Token 配置不会被忽略。

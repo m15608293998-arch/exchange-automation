@@ -22,7 +22,6 @@ Go 提供 HTTP API、校验、编排与审计；默认由本地 Python/PSRP **�
 
 ```http
 POST /api/exchange/users
-Authorization: Bearer <service-token>
 Content-Type: application/json
 
 {
@@ -66,7 +65,6 @@ Content-Type: application/json
 
 ```http
 POST /api/exchange/users/slpeng/offboard
-Authorization: Bearer <service-token>
 ```
 
 不接受请求体。先验证账号、UPN 和对象类型，再固定用户 GUID；所有移除操作使用同一 GUID，并复核组 GUID 与类型。
@@ -123,7 +121,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 |---|---|
 | 200 / 201 | 成功 / 新建成功 |
 | 400 / 415 | 参数或 JSON 错误 / 非 application/json |
-| 401 | 缺失或错误的服务 Bearer token |
+| 401 | 显式配置 API_TOKEN 后，缺失或错误的 Bearer token |
 | 404 | 目标邮箱不存在 |
 | 409 | 身份冲突、同用户操作中、需要人工核实的未知状态 |
 | 422 | 组不存在或组类型不允许 |
@@ -137,7 +135,6 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 
 生产必须明确设置：
 
-- API_TOKEN：至少 32 字节的随机服务令牌；不是 Keycloak 用户 JWT。
 - EXCHANGE_POWERSHELL_URL，例如 http://exchange01.corp.example.com/PowerShell/。
 - EXCHANGE_CREDENTIAL_FILE：权限 0600 的 JSON 凭据文件（username/password）；或不设文件、改为注入 EXCHANGE_USERNAME 与 EXCHANGE_PASSWORD，不允许混用。
 - EXCHANGE_MAIL_DOMAIN、EXCHANGE_MAILBOX_DATABASE、EXCHANGE_DOMAIN_CONTROLLER；EXCHANGE_ORGANIZATIONAL_UNIT 可不填。
@@ -163,7 +160,7 @@ partial_result 只表示已确认的进度；没有它不等于远端没有发�
 
 直连固定配置：忽略 HTTP 代理、Kerberos SPN 服务名 HTTP、不委派、无传输层自动重试；HTTP 使用 Kerberos 消息加密，HTTPS 使用校验证书的 TLS，SecureString 另由 PSRP 会话密钥加密。连接超时 15 秒，WSMan 单次操作/读取超时 60/70 秒，完整业务超时由 EXCHANGE_OPERATION_TIMEOUT 控制。
 
-只允许可信网关持有服务 token；网关负责 Keycloak 用户认证及操作授权，后端使用服务 token 防止绕过网关直接调用。服务 token 本身不提供员工级权限区分。不要跨不可信网络明文传输 HTTP API 密码/token。
+按当前业务要求，API_TOKEN 默认留空，Postman 选择 No Auth 即可调用。能访问服务监听地址的客户端可调用业务接口。只有显式配置至少 32 字节的 API_TOKEN 时，才启用 `Authorization: Bearer <API_TOKEN>` 校验；它不是 Keycloak 用户 JWT，也不提供员工级权限区分。不要跨不可信网络明文传输 HTTP API 密码/token。
 
 提供 [systemd 示例](deployment/exchange-automation.service)。部署前创建专用低权限 Linux 用户，安装到 /opt/exchange-automation，将权限为 0600 的配置放在 /etc/exchange-automation.env。Python 环境和凭据文件必须对该用户可读，不能依赖 /root 下的安装。示例通过 StateDirectory/RuntimeDirectory 创建 0700 目录；TimeoutStopSec 必须大于业务超时加 20 秒。
 
