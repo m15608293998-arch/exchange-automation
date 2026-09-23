@@ -1,5 +1,27 @@
 # Exchange 员工邮箱自动化
 
+## 架构与实现流程
+
+```mermaid
+flowchart TB
+    Caller["业务系统 / Postman"]
+    Admin["管理员创建受限 AD 服务账号并分配 Exchange RBAC"]
+
+    subgraph Host["Exchange 服务器本机"]
+        Config["config.json：邮箱域、数据库、域控"] --> Service["Windows 服务 ExchangeAutomation<br/>以受限账号运行"]
+        Service --> API["Python HTTP API<br/>入职、退组、健康检查"]
+        API --> Core["参数校验、操作编排、并发控制"]
+        Core --> State["状态目录：pending 记录、审计日志"]
+        Core --> Runner["本机 powershell.exe<br/>JSON 通过标准输入传递"]
+        Runner --> Scripts["固定业务脚本<br/>查组、建邮箱、加组、退组"]
+        Scripts --> Endpoint["本机 Microsoft.Exchange 端点<br/>Kerberos 使用服务账号身份"]
+    end
+
+    Caller --> API
+    Admin --> Service
+    Endpoint --> Directory["Exchange / AD"]
+```
+
 服务部署在 Exchange 服务器本机。Python 提供 HTTP API，本机 Windows PowerShell 5.1 连接本机 `Microsoft.Exchange` 端点，并按专用 AD 服务账号的 Exchange RBAC 权限执行操作。
 
 管理员使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建服务账号和专用角色。Python 服务的手动环境准备、配置与验收见 [Windows 本机服务部署说明](docs/windows-local-service.md)，生产参数模板见 [配置示例](deployment/config.example.json)。
@@ -101,22 +123,3 @@ POST /api/exchange/users/slpeng/offboard
 | 502 / 504 | PowerShell 执行失败或超时；结合 `state_unknown` 判断是否需要核查 |
 
 `GET /healthz` 只表示 Python HTTP 进程存活，不证明 Exchange 会话、数据库和 RBAC 写权限正常。
-
-## 测试
-
-Python 回归：
-
-```powershell
-py -3.13 -m unittest discover -s tests\python -v
-```
-
-PowerShell 5.1 桥接回归：
-
-```powershell
-.\tests\powershell\test_local_bridge.ps1
-.\tests\powershell\test_operations.ps1
-.\tests\powershell\test_admin_account.ps1
-.\tests\powershell\test_environment_collection.ps1
-```
-
-已在测试 Exchange 上以真实受限服务账号验证 Windows 服务运行、员工创建、加组/退组、幂等及执行中停服，见 [本机验收](docs/verification/local-2026-09-22.md) 和 [外部接口验收](docs/verification/external-2026-09-22.md)。生产上线前仍需用生产服务账号做隔离验收。
