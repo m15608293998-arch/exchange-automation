@@ -7,7 +7,7 @@ Python API 与 Exchange 部署在同一台服务器；本机 Windows PowerShell 
 本项目不提供环境一键安装器，也不会自动下载 Python、安装依赖、修改系统权限或防火墙。部署人员手动准备：
 
 - Windows PowerShell 5.1、64 位全机 Python（本次测试使用 3.13.15）。
-- 同一个 Python 中安装 `pywin32==312`、`waitress==3.0.2`、本项目 `exchange-automation-local==0.2.0`。
+- 同一个 Python 中安装 `pywin32==312`、`waitress==3.0.2`、本项目 `exchange-automation-local==0.2.1`。
 - 仓库位于固定目录，例如 `C:\ExchangeAutomation`；Python 不要安装在管理员的个人用户目录。
 - 使用管理员 [建号脚本](../deployment/Initialize-ExchangeAutomation.ps1) 创建的专用 AD 服务账号，手动赋予“作为服务登录”。不需要该账号有邮箱、管理员或远程桌面权限。若域策略存在“拒绝作为服务登录”，交由管理员处理，程序不会覆盖域策略。
 - 代码、Python 安装目录、配置文件：管理员/SYSTEM 可写，服务账号只读和执行；普通用户不能修改。状态目录：仅管理员/SYSTEM 和服务账号可写。
@@ -25,7 +25,7 @@ py -3.13 -m pip download --only-binary=:all: --dest wheelhouse pywin32==312 wait
 内网管理员手动安装 Python 后，从本地 wheel 安装依赖和应用：
 
 ```powershell
-py -3.13 -m pip --isolated --disable-pip-version-check install --no-index --find-links=C:\ExchangeAutomation\wheelhouse exchange-automation-local==0.2.0
+py -3.13 -m pip --isolated --disable-pip-version-check install --no-index --find-links=C:\ExchangeAutomation\wheelhouse exchange-automation-local==0.2.1
 ```
 
 如果未安装 Python 启动器，把 `py -3.13` 换成 Python 的绝对路径，例如 `& 'C:\Program Files\ExchangeAutomationPython\python.exe'`。服务使用同一解释器的 `PythonService.exe`。
@@ -71,9 +71,11 @@ Start-Service ExchangeAutomation
 Get-Service ExchangeAutomation
 ```
 
-注册入口只询问 `AD域\账号` 或 `账号@AD域`、密码，注册 Windows 服务；不负责安装环境或授权。密码由 Windows SCM 保管，不写入配置、日志或命令行。服务以该受限 AD 账号运行，业务权限仍由 Exchange RBAC 控制。
+注册入口只询问 `AD域\账号` 或 `账号@AD域`、密码，注册 Windows 服务并设置本服务的关机前等待时间；不负责安装环境或授权，不改全局关机策略。密码由 Windows SCM 保管，不写入配置、日志或命令行。服务以该受限 AD 账号运行，业务权限仍由 Exchange RBAC 控制。
 
-HTTP 使用固定线程数的 Waitress；默认最多同时运行 2 个员工操作，同一员工并发返回 409。停止服务先拒绝新业务，再等待正在执行的操作完成（受 `operation_timeout_seconds` 限制），最后释放单实例锁。管理员升级前先 `Stop-Service`，确认已停止，再更新应用 wheel 和 PowerShell 脚本。
+HTTP 使用固定线程数的 Waitress；默认最多同时运行 2 个员工操作，同一员工并发返回 409。停止服务先拒绝新业务，等待正在执行的操作完成，再给响应发送最多 5 秒，最后释放单实例锁。系统关机时接收预关机通知，等待预算覆盖最大业务超时；不能保证强制断电或依赖服务提前停止时完成。管理员升级前先 `Stop-Service`，确认已停止，再更新应用 wheel 和 PowerShell 脚本。
+
+旧版服务升级后，启动前以管理员执行一次 `py -3.13 -m exchange_local.install_service --configure-shutdown`；无需重新输入账号密码，只更新本服务的关机等待配置。首次注册已包含此步骤。
 
 修改源码后，已安装的 Python wheel 不会自动更新。升级时保留 `config.json` 和整个 `state` 目录，停服后带入新 wheel 和匹配的 `automation` 脚本，手动 `pip install --no-index --find-links=… --force-reinstall exchange-automation-local==<版本>`，再启动；不要重复注册同名服务。出现启动问题，查看 Windows“事件查看器 → 应用程序”和 `state\service.log`，优先核对服务登录权、密码、全机 Python 路径及目录读写权限。
 

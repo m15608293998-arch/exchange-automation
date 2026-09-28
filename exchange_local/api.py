@@ -5,11 +5,15 @@ import json
 import logging
 import secrets
 import threading
+import time
 from http import HTTPStatus
 
 from waitress import create_server as waitress_server, wasyncore
 
 from .core import OperationError, STATUS, invalid, login_name
+
+
+RESPONSE_DRAIN_SECONDS = 5
 
 
 class Application:
@@ -113,12 +117,22 @@ class Server:
 
     def shutdown(self):
         self.exchange.begin_stop()
+        self._server.accepting = False
         dispatcher = self._server.task_dispatcher
         dispatcher.set_thread_count(0)
         # Keep socket I/O alive while active workers finish; queued work is never executed.
         with dispatcher.lock:
             while dispatcher.threads:
                 dispatcher.thread_exit_cv.wait(0.2)
+        # A completed worker may still have response bytes queued on its socket.
+        # Keep the I/O loop running for a bounded grace period, including channels
+        # with a queued pipelined request (cancel() would discard their output).
+        deadline = time.monotonic() + RESPONSE_DRAIN_SECONDS
+        while any(channel.total_outbufs_len for channel in list(self._server.active_channels.values())):
+            if time.monotonic() >= deadline:
+                break
+            self._server.pull_trigger()
+            self._closed.wait(0.05)
         dispatcher.shutdown(timeout=0)
         self.server_close()
 

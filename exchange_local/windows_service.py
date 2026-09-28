@@ -11,15 +11,33 @@ from pathlib import Path
 import win32service
 import win32serviceutil
 
-from .api import create_server
-from .core import ExchangeService, PowerShellRunner, configured
+from .api import create_server, RESPONSE_DRAIN_SECONDS
+from .core import ExchangeService, PowerShellRunner, configured, MAX_OPERATION_TIMEOUT
 
 
 CONFIG_PATH = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "ExchangeAutomation" / "config.json"
+# Per-service budget, not the machine-wide WaitToKillServiceTimeout. SCM only
+# waits while this service is actually stopping; an idle service stops promptly.
+PRESHUTDOWN_MILLISECONDS = (MAX_OPERATION_TIMEOUT + RESPONSE_DRAIN_SECONDS + 30) * 1000
+
+
+def check_shutdown_budget(config):
+    manager = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+    try:
+        service = win32service.OpenService(manager, "ExchangeAutomation", win32service.SERVICE_QUERY_CONFIG)
+        try:
+            budget = win32service.QueryServiceConfig2(service, win32service.SERVICE_CONFIG_PRESHUTDOWN_INFO)
+        finally:
+            win32service.CloseServiceHandle(service)
+    finally:
+        win32service.CloseServiceHandle(manager)
+    if budget < (config.get("operation_timeout_seconds", 300) + RESPONSE_DRAIN_SECONDS + 30) * 1000:
+        raise ValueError("Service shutdown budget is insufficient; run exchange_local.install_service --configure-shutdown as administrator")
 
 
 def build_server():
     config, address = configured(json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")))
+    check_shutdown_budget(config)
     state = Path(config["state_directory"])
     state.mkdir(parents=True, exist_ok=True)
     instance_lock = open(state / "service.lock", "a+b")
@@ -77,7 +95,18 @@ class ExchangeAutomationService(win32serviceutil.ServiceFramework):
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        if self.server is not None:
+            self.server.exchange.begin_stop()
         self.stop_requested.set()
+
+    def GetAcceptedControls(self):
+        return super().GetAcceptedControls() | win32service.SERVICE_ACCEPT_PRESHUTDOWN
+
+    def SvcOtherEx(self, control, event_type, data):
+        if control == win32service.SERVICE_CONTROL_PRESHUTDOWN:
+            self.SvcStop()
+        else:
+            return super().SvcOtherEx(control, event_type, data)
 
     def SvcShutdown(self):
         self.SvcStop()

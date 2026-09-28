@@ -3,15 +3,19 @@
 import io
 import json
 import logging
+import os
+import socket
 import tempfile
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from waitress.channel import HTTPChannel
 
 from exchange_local.api import Application, create_server
 from exchange_local.core import ExchangeService, OperationError, PowerShellRunner, normalize_onboard
@@ -226,6 +230,32 @@ class LocalServiceTests(unittest.TestCase):
             self.service.offboard("ALICE")
         self.assertEqual(blocked.exception.code, "OPERATION_STATE_UNKNOWN")
 
+    def test_prefixed_account_does_not_borrow_another_accounts_marker(self):
+        self.service._acquire("alice")
+        self.service._acquire("account-alice")
+        self.assertEqual(self.service.active, {"alice", "account-alice"})
+        self.service._release("account-alice", None)
+        self.service._release("alice", None)
+        self.service._acquire("account-alice")
+        self.service._release("account-alice", None)
+        self.assertFalse(self.service.uncertain)
+
+    def test_marker_ownership_survives_restart_and_corruption_fails_closed(self):
+        self.service._acquire("alice")
+        restarted = ExchangeService(self.config, self.runner)
+        restarted._acquire("account-alice")
+        restarted._release("account-alice", None)
+        with self.assertRaises(OperationError):
+            restarted._acquire("alice")
+        self.service._release("alice", None)
+        for contents in (b"", b"{", b"\xff", b'{"login":"account-alice"}'):
+            with self.subTest(contents=contents):
+                Path(self.temp.name, "account-alice.pending").write_bytes(contents)
+                restarted = ExchangeService(self.config, self.runner)
+                with self.assertRaises(OperationError) as blocked:
+                    restarted._acquire("account-alice")
+                self.assertEqual(blocked.exception.code, "OPERATION_STATE_UNKNOWN")
+
     def test_lone_surrogates_are_rejected_before_writes(self):
         for field, value in (("display_name", "\ud800"), ("initial_password", "\udfff"), ("groups", ["\ud800"])):
             with self.subTest(field=field), self.assertRaises(OperationError):
@@ -280,6 +310,90 @@ class LocalServiceTests(unittest.TestCase):
         self.assertFalse(self.service.active)
         self.assertFalse(list(Path(self.temp.name).glob("*.pending")))
         self.assertEqual(results[0]["mailbox_id"], MAILBOX)
+
+    def test_stop_drains_buffered_response_and_bounds_nonreading_client(self):
+        for allow_send in (True, False):
+            with self.subTest(allow_send=allow_send):
+                send_allowed, buffered = threading.Event(), threading.Event()
+                class DelayedChannel(HTTPChannel):
+                    def _flush_some(self, do_close=True):
+                        if self.total_outbufs_len:
+                            buffered.set()
+                        if send_allowed.is_set():
+                            return super()._flush_some(do_close=do_close)
+                        return False
+                service = ExchangeService(self.config, FakeRunner())
+                server = create_server(("127.0.0.1", 0), self.config, service)
+                server._server.channel_class = DelayedChannel
+                loop = threading.Thread(target=server.serve_forever)
+                loop.start()
+                client = socket.create_connection(("127.0.0.1", server.server_port), timeout=3)
+                stopper = threading.Thread(target=server.shutdown)
+                try:
+                    # The second pipelined request must not discard the first response.
+                    client.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n" * 2)
+                    self.assertTrue(buffered.wait(2))
+                    with patch("exchange_local.api.RESPONSE_DRAIN_SECONDS", 0.5):
+                        started = time.monotonic()
+                        stopper.start()
+                        self.assertFalse(server._closed.wait(0.1))
+                        if allow_send:
+                            send_allowed.set()
+                        stopper.join(3)
+                        self.assertFalse(stopper.is_alive())
+                        self.assertLess(time.monotonic() - started, 2)
+                    received = b""
+                    while True:
+                        chunk = client.recv(65536)
+                        if not chunk:
+                            break
+                        received += chunk
+                    if allow_send:
+                        headers, body = received.split(b"\r\n\r\n", 1)
+                        size = next(int(line.split(b":", 1)[1]) for line in headers.split(b"\r\n")
+                                    if line.lower().startswith(b"content-length:"))
+                        self.assertEqual(json.loads(body[:size]), {"status": "ok"})
+                    else:
+                        self.assertEqual(received, b"")
+                finally:
+                    send_allowed.set()
+                    client.close()
+                    if stopper.ident is None:
+                        server.shutdown()
+                    else:
+                        stopper.join(3)
+                    server.server_close()
+                    loop.join(3)
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows PowerShell 5.1")
+    def test_native_bridge_diagnostics_do_not_corrupt_json_or_leak_secrets(self):
+        root = Path(self.temp.name)
+        local, scripts = root / "local", root / "scripts"
+        local.mkdir()
+        scripts.mkdir()
+        source = Path(__file__).resolve().parents[2] / "automation" / "local" / "Invoke-ExchangeOperation.ps1"
+        bridge = local / source.name
+        bridge.write_bytes(source.read_bytes())
+        (scripts / "common.ps1").write_text("param()\n", encoding="utf-8-sig")
+        business = scripts / "ensure_mailbox.ps1"
+        secret = "diagnostic-secret-must-not-escape"
+        business.write_text("\n".join([
+            "Write-Warning '%s' -WarningAction Continue" % secret,
+            "Write-Verbose '%s' -Verbose" % secret,
+            "$DebugPreference = 'Continue'; Write-Debug '%s'" % secret,
+            "Write-Host '%s'" % secret,
+            "'{\"ok\":true,\"data\":{\"created\":true}}'",
+        ]), encoding="utf-8-sig")
+        runner = PowerShellRunner(bridge)
+        wire = runner._invoke(b'{"operation":"ensure_mailbox","parameters":{}}', 10)
+        self.assertNotIn(secret.encode(), wire.stdout)
+        self.assertEqual(json.loads(wire.stdout.decode("utf-8-sig")), {"ok": True, "data": {"created": True}})
+        self.assertEqual(runner.execute("ensure_mailbox", {}, 10), {"created": True})
+        business.write_text("throw '%s'" % secret, encoding="utf-8-sig")
+        with self.assertRaises(OperationError) as failed:
+            runner.execute("ensure_mailbox", {}, 10)
+        self.assertTrue(failed.exception.state_unknown)
+        self.assertNotIn(secret, str(failed.exception))
 
 
 if __name__ == "__main__":

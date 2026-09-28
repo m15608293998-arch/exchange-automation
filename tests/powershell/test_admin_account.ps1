@@ -146,7 +146,7 @@ Assert-Throws 'long account name rejected' { Resolve-ServiceAccountName '1234567
 Assert-Throws 'preview requires name without prompting' { Resolve-ServiceAccountName '' -Preview }
 Assert-Test 'mail and database discovery are not installer prerequisites' ($SourceText -notmatch 'Get-AcceptedDomain|Get-MailboxDatabase|Select-SetupValue')
 Assert-Test 'account-only setup does not enumerate forest domains or employee UPN suffixes' ($SourceText -notmatch '\$domain\.Forest|uPNSuffixes|configurationNamingContext|DomainCount')
-Assert-Test 'handoff is explicitly connection-only' ($SourceText -match 'connection.env.example' -and $SourceText -notmatch 'application.env.example')
+Assert-Test 'handoff has no obsolete remote deployment configuration' ($SourceText -match 'setup-report.json' -and $SourceText -notmatch 'connection.env.example|application.env.example|systemd|Linux')
 
 # Relevant parameter subsets transcribed from the production CU6 screenshots,
 # not a complete export of the parent roles and not evidence of write access.
@@ -347,9 +347,8 @@ function Test-ServiceEndpoint {
     [pscustomobject]@{ ReadOnlyCheck = 'Passed'; BusinessWriteTest = 'NotRun' }
 }
 function Write-SetupHandoff {
-    param($Directory, $Report, $Settings)
+    param($Directory, $Report)
     $script:TestReport = $Report
-    $script:TestSettings = $Settings
     $script:TestEvents += 'report:' + $Report.status
 }
 # Avoid ANY filesystem or AD mutation in main-path tests.
@@ -371,7 +370,7 @@ $mainCommand = [scriptblock]::Create($header + "`n" + $functionText + "`n" + $ma
 foreach ($scenario in @('preview', 'success', 'interactive', 'existing', 'invalid-name', 'empty-password', 'assignment', 'login')) {
     $script:TestEvents = @(); $script:TestAssignments = @(); $script:TestFailure = $scenario
     $script:TestPrompts = @()
-    $script:TestReport = $null; $script:TestSettings = $null; $script:TestPrincipal = $null
+    $script:TestReport = $null; $script:TestPrincipal = $null
     if ($scenario -in @('assignment', 'login')) {
         Assert-Throws "$scenario failure propagates" { & $mainCommand -ErrorAction SilentlyContinue }
         Assert-Test "$scenario failure leaves new account disabled" (-not $script:TestPrincipal.Enabled)
@@ -398,15 +397,15 @@ foreach ($scenario in @('preview', 'success', 'interactive', 'existing', 'invali
     else {
         $returned = @(& $mainCommand)
         Assert-Test 'main success produces honest readiness report' ($script:TestReport.status -eq 'provisioned_and_read_check_passed' -and -not $script:TestReport.business_write_verified)
-        Assert-Test 'main does not select employee mailbox deployment settings' (@(@('EXCHANGE_MAIL_DOMAIN', 'EXCHANGE_MAILBOX_DATABASE', 'EXCHANGE_UPN_SUFFIX', 'EXCHANGE_ORGANIZATIONAL_UNIT', 'HTTP_ADDRESS', 'APP_ENV') | Where-Object { $script:TestSettings.ContainsKey($_) }).Count -eq 0)
+        Assert-Test 'main handoff describes local Windows deployment only' ($script:TestReport.next_step -match 'Windows service' -and $script:TestReport.next_step -notmatch 'Linux|connection.env')
         Assert-Test 'main returns only the service account UPN' ($returned.Count -eq 1 -and $returned[0] -ceq 'unit@example.com')
-        Assert-Test 'main exports working connection identity and endpoint' ($script:TestSettings.EXCHANGE_USERNAME -ceq 'unit@example.com' -and $script:TestSettings.EXCHANGE_POWERSHELL_URL -eq 'http://exchange.example.com/PowerShell/' -and $script:TestSettings.EXCHANGE_DOMAIN_CONTROLLER -eq 'dc.example.com')
+        Assert-Test 'main reports working connection identity and endpoint' ($script:TestReport.username -ceq 'unit@example.com' -and $script:TestReport.endpoint -eq 'http://exchange.example.com/PowerShell/' -and $script:TestReport.domain_controller -eq 'dc.example.com')
         Assert-Test 'main report distinguishes account setup from app configuration' ($script:TestReport.setup_mode -eq 'service_account_only')
         Assert-Test 'main report records discovered Exchange build' ($script:TestReport.exchange_server -eq 'exchange.example.com' -and $script:TestReport.exchange_version -eq 'Version 15.2 (Build 659.4)')
         Assert-Test 'main report records requested service password policy and no mailbox' ($script:TestReport.password_never_expires -and -not $script:TestReport.change_password_at_next_logon -and -not $script:TestReport.service_mailbox_created)
         Assert-Test 'roles prepared before account and assignments' ($script:TestEvents[0] -eq 'output-directory' -and $script:TestEvents[1] -like 'role:*' -and $script:TestEvents[6] -eq 'account-disabled')
         Assert-Test 'login happens after role assignment' ([array]::IndexOf($script:TestEvents, 'read-check') -gt [array]::IndexOf($script:TestEvents, 'account-enabled:True'))
-        Assert-Test 'no password or token in handoff settings' (-not $script:TestSettings.ContainsKey('EXCHANGE_PASSWORD') -and -not $script:TestSettings.ContainsKey('API_TOKEN'))
+        Assert-Test 'no secret in handoff report' (($script:TestReport | ConvertTo-Json -Depth 8) -notmatch 'Test-only-never-used-123|EXCHANGE_PASSWORD|API_TOKEN')
     }
 }
 [pscustomobject]@{ passed = $script:Passed.Count; tests = $script:Passed; real_directory_writes = 0; real_exchange_writes = 0 } | ConvertTo-Json -Depth 5 -Compress

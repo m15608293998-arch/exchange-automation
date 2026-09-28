@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exchange-automation-local"
-version = "0.2.0"
+version = "0.2.1"
 description = "Exchange-local Python HTTP service"
 requires-python = ">=3.9"
 dependencies = ["pywin32==312; sys_platform == 'win32'", "waitress==3.0.2"]

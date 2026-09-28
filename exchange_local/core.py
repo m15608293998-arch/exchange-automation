@@ -17,6 +17,7 @@ DOMAIN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0
 GUID = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
 OPERATIONS = {"resolve_groups", "ensure_mailbox", "ensure_group_member", "discover_user_groups", "remove_group_member"}
 MUTATIONS = {"ensure_mailbox", "ensure_group_member", "remove_group_member"}
+MAX_OPERATION_TIMEOUT = 1800
 STATUS = {
     "UNAUTHORIZED": 401, "UNSUPPORTED_MEDIA_TYPE": 415, "SERVICE_STOPPING": 503, "INTERNAL_ERROR": 500,
     "INVALID_REQUEST": 400, "USER_NOT_FOUND": 404,
@@ -109,7 +110,7 @@ def configured(config):
         raise ValueError("invalid HTTP port")
     timeout = config.get("operation_timeout_seconds", 300)
     max_concurrent = config.get("max_concurrent_operations", 2)
-    if type(timeout) is not int or not 1 <= timeout <= 1800 or type(max_concurrent) is not int or not 1 <= max_concurrent <= 32:
+    if type(timeout) is not int or not 1 <= timeout <= MAX_OPERATION_TIMEOUT or type(max_concurrent) is not int or not 1 <= max_concurrent <= 32:
         raise ValueError("invalid timeout or concurrency")
     token = config.get("api_token", "")
     if not isinstance(token, str) or token and (len(token.encode("utf-8")) < 32 or not token.strip()):
@@ -233,13 +234,31 @@ class ExchangeService:
         # Prefix avoids Windows device names such as CON.pending / NUL.pending.
         return self.state / ("account-" + login + ".pending")
 
+    def _legacy_pending(self, login):
+        legacy = self.state / (login + ".pending")
+        if not legacy.is_file():
+            return False
+        # account-alice.pending may be alice's CURRENT marker, not an old
+        # marker for account-alice. Only ignore it when its contents prove this.
+        if login.startswith("account-"):
+            try:
+                with legacy.open(encoding="utf-8") as journal:
+                    record = json.loads(journal.read(4096))
+                if (isinstance(record, dict) and record.get("login") == login[len("account-"):]
+                        and isinstance(record.get("started_at"), str)):
+                    return False
+            except (OSError, ValueError):
+                pass
+        # Empty, damaged or unreadable legacy records remain fail-closed.
+        return True
+
     def _acquire(self, login):
         with self.lock:
             if self.stopping:
                 raise OperationError("SERVICE_STOPPING", "Service is stopping; retry later")
             if login in self.active:
                 raise OperationError("OPERATION_BUSY", "Another operation is running for this user")
-            if login in self.uncertain or self._pending(login).exists() or (self.state / (login + ".pending")).is_file():
+            if login in self.uncertain or self._pending(login).exists() or self._legacy_pending(login):
                 self.uncertain.add(login)
                 raise OperationError("OPERATION_STATE_UNKNOWN", "An unfinished operation is recorded; reconcile before retrying", state_unknown=True)
             if len(self.active) >= self.config.get("max_concurrent_operations", 2):

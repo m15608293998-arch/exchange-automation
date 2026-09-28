@@ -26,6 +26,8 @@ flowchart TB
 
 管理员使用 [初始化脚本](deployment/Initialize-ExchangeAutomation.ps1) 创建服务账号和专用角色。Python 服务的手动环境准备、配置与验收见 [Windows 本机服务部署说明](docs/windows-local-service.md)，生产参数模板见 [配置示例](deployment/config.example.json)。
 
+部署时需在 Exchange 服务器防火墙中，向实际调用方 IP 放行本服务的 TCP 端口（默认 `18082`），否则外部接口请求会超时。
+
 ## 目录
 
 ```text

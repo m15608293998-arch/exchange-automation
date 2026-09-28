@@ -35,7 +35,10 @@ try {
     $common = Get-Content -LiteralPath (Join-Path $scripts 'common.ps1') -Raw -Encoding UTF8
     $business = Get-Content -LiteralPath (Join-Path $scripts $operations[$operation]) -Raw -Encoding UTF8
     $script = [scriptblock]::Create($common + "`n" + $business)
-    $output = @(& $script @parameters)
+    # stdout is reserved for one JSON result. Discard diagnostic streams rather
+    # than exposing raw Exchange messages (which may contain bound arguments).
+    # Terminating errors are still converted to the fixed failure JSON below.
+    $output = @(& $script @parameters 3>$null 4>$null 5>$null 6>$null)
     if ($output.Count -ne 1 -or $output[0] -isnot [string]) {
         throw 'Exchange operation returned an invalid result.'
     }

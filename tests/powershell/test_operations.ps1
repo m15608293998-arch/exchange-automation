@@ -39,7 +39,9 @@ function Get-User { [CmdletBinding()] param($Identity, $DomainController) }
 function Get-DistributionGroup {
     [CmdletBinding()] param($Identity, $DomainController, $ResultSize, $RecipientTypeDetails, $Filter)
     if ($Filter) {
-        if ($Filter -cne "Members -eq 'CN=Test O''Brien,CN=Users,DC=example,DC=com'") { throw 'Unsafe membership filter' }
+        $memberFilter = "Members -eq 'CN=Test O''Brien,CN=Users,DC=example,DC=com'"
+        if ($Filter -cne $memberFilter -and $Filter -cne "Guid -eq '$($script:MockGroup.Guid)' -and $memberFilter") { throw 'Unsafe membership filter' }
+        if ($Filter.StartsWith('Guid') -and ($ResultSize -ne 1 -or $DomainController -ne 'dc.example.com')) { throw 'Membership check must be bounded and pinned to DC' }
         if (-not $script:Member) { return }
     }
     if ($script:Scenario -eq 'denied') { throw [System.UnauthorizedAccessException]::new('do not suppress this error') }
@@ -51,16 +53,18 @@ function Get-DistributionGroup {
 }
 function Get-DistributionGroupMember {
     [CmdletBinding()] param($Identity, $DomainController, $ResultSize)
-    if ($script:Member) { return $script:MockMailbox }
+    throw 'Business membership checks must not enumerate full group rosters'
 }
 function Add-DistributionGroupMember {
     [CmdletBinding()] param($Identity, $Member, $DomainController, [switch]$BypassSecurityGroupManagerCheck)
     $script:Writes++
+    $script:LastWrite = @{} + $PSBoundParameters
     $script:Member = $true
 }
 function Remove-DistributionGroupMember {
     [CmdletBinding(SupportsShouldProcess)] param($Identity, $Member, $DomainController, [switch]$BypassSecurityGroupManagerCheck)
     $script:Writes++
+    $script:LastWrite = @{} + $PSBoundParameters
     $script:Member = $false
 }
 function New-Mailbox {
@@ -76,6 +80,7 @@ function Invoke-Scenario {
     param([string] $Operation, [string] $Scenario, [hashtable] $Parameters)
     $script:Scenario = $Scenario
     $script:Writes = 0
+    $script:LastWrite = $null
     $command = [scriptblock]::Create($Sources.'common.ps1' + "`n" + $Mocks + "`n" + $Sources.$Operation)
     $output = @(& $command @Parameters)
     if ($output.Count -ne 1) { throw "Expected one result, got $($output.Count)" }
@@ -94,7 +99,7 @@ foreach ($property in $Sources.PSObject.Properties) {
     Assert-Test "syntax/$($property.Name)" ($parseErrors.Count -eq 0)
 }
 $identity = @{ LoginName = 'slpeng'; UserPrincipalName = 'slpeng@example.com' }
-$membership = @{ MemberIdentity = [string]$script:MockMailbox.Guid; GroupIdentity = [string]$script:MockGroup.Guid }
+$membership = @{ MemberIdentity = [string]$script:MockMailbox.Guid; GroupIdentity = [string]$script:MockGroup.Guid; DomainController = 'dc.example.com' }
 
 $script:MockMailbox.SamAccountName = 'someoneelse'
 $result = Invoke-Scenario 'discover_user_groups.ps1' 'normal' $identity
@@ -131,10 +136,12 @@ Assert-Test 'canonical GUID deduplication' ($result.ok -and $result.data.groups.
 $script:Member = $false
 $result = Invoke-Scenario 'ensure_group_member.ps1' 'normal' $membership
 Assert-Test 'add exact GUID and verify membership' ($result.ok -and $result.data.added -and $script:Writes -eq 1)
+Assert-Test 'add binds exact target GUIDs DC and manager bypass' ($script:LastWrite.Identity -eq $membership.GroupIdentity -and $script:LastWrite.Member -eq $membership.MemberIdentity -and $script:LastWrite.DomainController -eq $membership.DomainController -and $script:LastWrite.BypassSecurityGroupManagerCheck)
 $result = Invoke-Scenario 'ensure_group_member.ps1' 'normal' $membership
 Assert-Test 'repeated add does not write' ($result.ok -and -not $result.data.added -and $script:Writes -eq 0)
 $result = Invoke-Scenario 'remove_group_member.ps1' 'normal' $membership
 Assert-Test 'remove exact GUID and verify absence' ($result.ok -and $result.data.removed -and $script:Writes -eq 1)
+Assert-Test 'remove binds exact target GUIDs DC bypass and no confirmation' ($script:LastWrite.Identity -eq $membership.GroupIdentity -and $script:LastWrite.Member -eq $membership.MemberIdentity -and $script:LastWrite.DomainController -eq $membership.DomainController -and $script:LastWrite.BypassSecurityGroupManagerCheck -and $script:LastWrite.ContainsKey('Confirm') -and -not $script:LastWrite.Confirm)
 $result = Invoke-Scenario 'remove_group_member.ps1' 'normal' $membership
 Assert-Test 'repeated removal does not write' ($result.ok -and -not $result.data.removed -and $script:Writes -eq 0)
 

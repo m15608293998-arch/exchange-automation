@@ -129,8 +129,17 @@ function Get-GroupLabel {
 
 function Test-GroupMembership {
     param([object] $Group, [object] $Recipient)
-    $members = @(Get-DistributionGroupMember -Identity ([string]$Group.Guid) -ResultSize Unlimited @script:DirectoryParameters)
-    return @($members | Where-Object { [string]$_.Guid -eq [string]$Recipient.Guid }).Count -gt 0
+    # Check one membership on the DC, not the full roster of a potentially huge
+    # group. Keep the fixed GUID and escape the verified recipient's DN as data.
+    $groupGuid = [string]$Group.Guid
+    Assert-Guid $groupGuid
+    $memberDn = ([string]$Recipient.DistinguishedName).Replace("'", "''")
+    if ([string]::IsNullOrWhiteSpace($memberDn)) { Stop-Automation 'EXCHANGE_COMMAND_FAILED' }
+    $matches = @(Get-DistributionGroup -Filter "Guid -eq '$groupGuid' -and Members -eq '$memberDn'" -ResultSize 1 @script:DirectoryParameters)
+    if ($matches.Count -eq 0) { return $false }
+    if ([string]$matches[0].Guid -ne $groupGuid) { Stop-Automation 'RECIPIENT_CONFLICT' }
+    Assert-DistributionGroup $matches[0]
+    return $true
 }
 
 function Write-AutomationResult {

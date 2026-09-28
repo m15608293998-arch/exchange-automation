@@ -416,20 +416,9 @@ function Resolve-ServiceAccountName {
 
 # 【写入本地报告】只保存账号、连接和检查结果，不保存密码；文件写入本次新目录。
 function Write-SetupHandoff {
-    param([string] $Directory, $Report, [hashtable] $Settings)
+    param([string] $Directory, $Report)
     # Directory was newly created by this invocation. Exports contain no password/token.
     $Report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Directory 'setup-report.json') -Encoding UTF8
-    if ($null -ne $Settings) {
-        $lines = @('# Connection settings only; merge into the application deployment configuration.',
-            '# systemd EnvironmentFile syntax; NOT a shell script. Password supplied separately.')
-        foreach ($name in @($Settings.Keys | Sort-Object)) {
-            $text = [string]$Settings[$name]
-            if ($text -match '[\r\n\x00]') { throw 'Invalid configuration value in handoff.' }
-            $text = $text.Replace('\', '\\').Replace('"', '\"')
-            $lines += "$name=`"$text`""
-        }
-        $lines | Set-Content -LiteralPath (Join-Path $Directory 'connection.env.example') -Encoding UTF8
-    }
 }
 
 # MAIN -- tests load only function definitions from this file's AST.
@@ -529,11 +518,6 @@ try {
     # 认证错误不重试；仅成功认证后的权限缓存延迟允许有限次重查。
     $check = Test-ServiceEndpoint $url ([pscredential]::new($upn, $Password)) $specifications $dc
     # 8. 保存不含密码的交付文件；只读检查通过后才输出 SUCCESS 和完整登录名。
-    $settings = @{
-        EXCHANGE_CONNECTION_MODE = 'direct'
-        EXCHANGE_POWERSHELL_URL = $url; EXCHANGE_AUTH = 'kerberos'; EXCHANGE_USERNAME = $upn
-        EXCHANGE_DOMAIN_CONTROLLER = $dc; EXCHANGE_BYPASS_GROUP_MANAGER_CHECK = 'true'
-    }
     $report = [ordered]@{
         status = 'provisioned_and_read_check_passed'; username = $upn; account_guid = $accountGuid
         setup_mode = 'service_account_only'
@@ -543,14 +527,14 @@ try {
         group_scope = (Get-NormalGroupFilter); group_scope_reused = $scopeReused
         employee_ou_restriction = $false; password_exported = $false; password_never_expires = $true
         change_password_at_next_logon = $false; service_mailbox_created = $false
-        verification = $check; linux_connectivity_verified = $false; business_write_verified = $false
-        next_step = 'Use this account and the password entered. Connection details are in connection.env.example. Employee mail domain/database and Linux deployment are configured separately by the application operator.'
+        verification = $check; business_write_verified = $false
+        next_step = 'Register the Windows service on this Exchange server using this account and the entered password. Prepare service-logon and directory permissions; configure employee mail domain/database in config.json. Validate with an isolated employee.'
     }
-    Write-SetupHandoff $reportDirectory $report $settings
+    Write-SetupHandoff $reportDirectory $report
     Write-Host "SUCCESS: $upn. Service login and required command parameters verified."
     Write-Host "Handoff files: $reportDirectory (no passwords). The password is the one you entered."
     Write-Host '服务账号无邮箱；密码永不过期，首次登录无需改密。请妥善保管输入的密码。'
-    Write-Warning '以上仅为服务器端只读验收；Linux 连接及隔离员工的创建、加组、离组仍需验收。'
+    Write-Warning '以上仅为账号只读验收；仍须注册本机 Windows 服务，并用隔离员工验证创建、加组、离组。'
     Write-Output $upn
 }
 catch {
@@ -569,7 +553,7 @@ catch {
             error_type = $setupError.Exception.GetType().FullName; business_write_verified = $false
             next_step = 'Do not use this account until reviewed. Newly created roles/accounts may remain; no existing object was overwritten and no rollback deletion was attempted.'
         }
-        try { Write-SetupHandoff $reportDirectory $failure $null } catch { Write-Warning 'Could not write failure report.' }
+        try { Write-SetupHandoff $reportDirectory $failure } catch { Write-Warning 'Could not write failure report.' }
     }
     # Preflight messages contain no password; suppress directory/Exchange write errors
     # that could include arguments. Stage/type plus server diagnostics identify failure.

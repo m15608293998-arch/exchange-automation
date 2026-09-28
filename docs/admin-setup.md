@@ -56,7 +56,6 @@
 脚本在管理员本地保留 `exchange-handoff-<随机标识>` 目录：
 
 - `setup-report.json`：账号、GUID、域控、Exchange 地址、角色和检查结果。
-- `connection.env.example`：历史格式的连接信息清单，仅供查询；当前本机服务不加载它，不要执行或覆盖业务 JSON 配置。
 
 员工邮箱域和数据库已经放在 [生产配置示例](../deployment/config.example.json) 中：`bjwgby.com`、`Mailbox Database 1119980504`，建号时无需选择。它们是业务配置，不是账号 RBAC 的参数值限制。部署人员仍须手动准备“作为服务登录”、代码只读、状态目录可写等条件。
 
@@ -66,4 +65,4 @@
 
 `SUCCESS` 只证明账号登录、命令参数和读取正常，不代表所有业务写入已验收。AD ACL、独占管理范围、AD split permissions、域策略及密码策略仍可能限制实际操作，程序不会绕过它们。
 
-当前测试证据见 [本机验收](verification/local-2026-09-22.md)、[外部接口验收](verification/external-2026-09-22.md)；以前的建号记录可从 Git 历史恢复。生产仍须用生产服务账号做隔离员工创建、加组和离组验收。
+当前修复测试见 [0.2.1 验收](verification/fixes-2026-09-28.md)，之前的完整流程见 [本机验收](verification/local-2026-09-22.md)、[外部接口验收](verification/external-2026-09-22.md)。生产仍须用生产服务账号做隔离员工创建、加组和离组验收。
